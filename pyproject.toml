@@ -1,0 +1,9 @@
+[project]
+name = "cc-trace-viewer"
+version = "0.1.0"
+
+[tool.ruff]
+ignore = ["F403", "F405", "F841"]
+
+[tool.mypy]
+ignore_missing_imports = true
