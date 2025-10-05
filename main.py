@@ -123,6 +123,46 @@ class TraceEvent:
     children: List["TraceEvent"] = field(default_factory=list)
     level: int = 0
 
+    def is_tool_call(self) -> bool:
+        """Check if this event is a tool call"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        return True
+        return False
+
+    def is_tool_result(self) -> bool:
+        """Check if this event is a tool result"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        return True
+        return False
+
+    def get_tool_use_id(self) -> Optional[str]:
+        """Get tool_use_id from tool_result"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_result":
+                        return item.get("tool_use_id")
+        return None
+
+    def get_tool_name(self) -> str:
+        """Get tool name if this is a tool call"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        return item.get("name", "unknown")
+        return ""
+
     def get_display_text(self) -> str:
         """Get human-readable text for display"""
         # For summary type
@@ -141,7 +181,10 @@ class TraceEvent:
                         if item.get("type") == "text":
                             return item.get("text", "")[:200]
                         elif item.get("type") == "tool_use":
-                            return f"Tool: {item.get('name', 'unknown')}"
+                            return item.get("name", "unknown")
+                        elif item.get("type") == "tool_result":
+                            # Will be set by TraceTreeNode with proper lookup
+                            return "tool_result"
                 return "Multiple content items"
 
         # For system events
@@ -322,15 +365,39 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
     )
 
 
-def TraceTreeNode(event: TraceEvent, session_id: str):
+def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None):
     """Flat timeline event node"""
     node_id = f"node-{event.id}"
 
     display_text = event.get_display_text()
 
+    # Check if this is a tool call
+    if event.is_tool_call():
+        label = "tool call"
+        label_color = "text-xs text-yellow-500"
+    elif event.is_tool_result():
+        label = "tool result"
+        label_color = "text-xs text-green-500"
+        # Find the corresponding tool_use event to get the tool name
+        tool_use_id = event.get_tool_use_id()
+        if tool_use_id and all_events:
+            for e in all_events:
+                # Check if this event has a tool_use with matching id
+                if "message" in e.data:
+                    msg = e.data["message"]
+                    if isinstance(msg.get("content"), list):
+                        for item in msg["content"]:
+                            if isinstance(item, dict) and item.get("type") == "tool_use":
+                                if item.get("id") == tool_use_id:
+                                    display_text = item.get("name", "unknown")
+                                    break
+    else:
+        label = event.event_type
+        label_color = "text-xs text-gray-500"
+
     return Div(
-        Span(f"{event.event_type}", cls="text-xs text-gray-500"),
-        Span(" ", display_text, cls="ml-2"),
+        Span(label, cls=label_color),
+        Span(display_text),
         cls="trace-event",
         hx_get=f"/event/{session_id}/{event.id}",
         hx_target="#detail-panel",
@@ -351,7 +418,6 @@ def DetailPanel(event: TraceEvent):
             Code(formatted_json),
             cls="bg-gray-900 text-gray-100 p-4 rounded overflow-auto text-sm",
         ),
-        cls="p-4",
     )
 
 
@@ -416,7 +482,7 @@ def viewer(session_id: str):
 
     trace_tree = parse_session_file(session_file)
 
-    tree_nodes = [TraceTreeNode(event, session_id) for event in trace_tree]
+    tree_nodes = [TraceTreeNode(event, session_id, trace_tree) for event in trace_tree]
 
     return Layout(
         Div(
@@ -453,7 +519,7 @@ def viewer(session_id: str):
                             cls="overflow-auto",
                             style="max-height: 70vh",
                         ),
-                        cls="p-4",
+                        cls="pt-4 pr-4 pb-4",
                     ),
                     style="width: 70%",
                 ),
