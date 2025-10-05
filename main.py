@@ -1,11 +1,24 @@
 """
 Claude Code trace viewer application that displays session traces from JSONL files.
 
-Input data sources: JSONL files in ~/.claude/sessions/
-Output destinations: Web UI served at localhost
+This application automatically detects the current user's Claude Code sessions and
+displays them in a web interface with accurate local timezone conversions.
+
+Input data sources: JSONL files in ~/.claude/projects/ (auto-detected for current user)
+Output destinations: Web UI served at http://localhost:5001
 Dependencies: FastHTML, MonsterUI, python-dateutil
 Key exports: app, serve()
-Side effects: Reads session files, serves HTTP server
+Side effects: Reads session files from user's home directory, serves HTTP server
+
+Usage:
+    python main.py
+    # or with uv:
+    uv run python main.py
+
+The app will automatically:
+- Detect the current user's home directory
+- Find Claude Code sessions in ~/.claude/projects/
+- Convert UTC timestamps to local timezone for accurate relative time display
 """
 
 from fasthtml.common import *
