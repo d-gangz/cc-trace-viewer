@@ -39,6 +39,15 @@ custom_css = Style(
         transition: all 0.2s ease;
         border-radius: 0.375rem;
         border-left: 3px solid transparent;
+        line-height: 1.5;
+        word-wrap: break-word;
+    }
+
+    .trace-event > span:last-child {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
     }
 
     .trace-event:hover {
@@ -55,6 +64,7 @@ custom_css = Style(
 selection_script = Script(
     """
     document.addEventListener('DOMContentLoaded', function() {
+        // Handle selection on HTMX request
         document.body.addEventListener('htmx:beforeRequest', function(evt) {
             if (evt.detail.elt.classList.contains('trace-event')) {
                 document.querySelectorAll('.trace-event').forEach(function(item) {
@@ -62,6 +72,36 @@ selection_script = Script(
                 });
                 evt.detail.elt.classList.add('selected');
             }
+        });
+
+        // Handle keyboard navigation
+        document.addEventListener('keydown', function(evt) {
+            if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') {
+                return;
+            }
+
+            evt.preventDefault();
+
+            var events = Array.from(document.querySelectorAll('.trace-event'));
+            if (events.length === 0) return;
+
+            var selected = document.querySelector('.trace-event.selected');
+            var currentIndex = selected ? events.indexOf(selected) : -1;
+            var newIndex;
+
+            if (evt.key === 'ArrowDown') {
+                newIndex = currentIndex + 1;
+                if (newIndex >= events.length) newIndex = 0;
+            } else {
+                newIndex = currentIndex - 1;
+                if (newIndex < 0) newIndex = events.length - 1;
+            }
+
+            // Trigger HTMX on new element
+            htmx.trigger(events[newIndex], 'click');
+
+            // Scroll into view
+            events[newIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         });
     });
 """
@@ -288,24 +328,9 @@ def TraceTreeNode(event: TraceEvent, session_id: str):
 
     display_text = event.get_display_text()
 
-    # Format timestamp nicely
-    timestamp_display = None
-    if event.timestamp:
-        try:
-            dt = date_parser.parse(event.timestamp)
-            timestamp_display = dt.strftime("%H:%M:%S")
-        except Exception:
-            timestamp_display = event.timestamp
-
-    return DivLAligned(
-        UkIcon("circle", width=16, height=16),
-        Span(f"{event.event_type}", cls="text-xs text-gray-500 ml-2"),
-        Span(display_text, cls=TextT.bold + " ml-2"),
-        (
-            Span(timestamp_display, cls=TextT.muted + " " + TextT.sm + " ml-4")
-            if timestamp_display
-            else None
-        ),
+    return Div(
+        Span(f"{event.event_type}", cls="text-xs text-gray-500"),
+        Span(" ", display_text, cls="ml-2"),
         cls="trace-event",
         hx_get=f"/event/{session_id}/{event.id}",
         hx_target="#detail-panel",
@@ -396,12 +421,12 @@ def viewer(session_id: str):
     return Layout(
         Div(
             DivFullySpaced(
-                H2(f"Session: {session_id[:16]}...", cls="mb-4"),
+                H3(f"Session: {session_id}", cls="mb-4"),
                 A("← Back to Home", href="/", cls=AT.primary),
                 cls="mb-4",
             ),
-            Grid(
-                # Left panel - Trace tree
+            Div(
+                # Left panel - Trace tree (30% width)
                 Div(
                     Card(
                         H3("Trace Tree", cls="mb-4 font-bold"),
@@ -415,9 +440,10 @@ def viewer(session_id: str):
                             style="max-height: 70vh",
                         ),
                         cls="p-4",
-                    )
+                    ),
+                    style="width: 30%",
                 ),
-                # Right panel - Detail view
+                # Right panel - Detail view (70% width)
                 Div(
                     Card(
                         H3("Event Details", cls="mb-4 font-bold"),
@@ -428,10 +454,11 @@ def viewer(session_id: str):
                             style="max-height: 70vh",
                         ),
                         cls="p-4",
-                    )
+                    ),
+                    style="width: 70%",
                 ),
-                cols=2,
                 cls="gap-4 mt-4",
+                style="display: flex; gap: 1rem",
             ),
         )
     )
