@@ -12,7 +12,7 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 - Accurate timezone handling and conversion
 - Filter out incomplete/summary-only sessions
 
-### UI Enhancement Requests (Current Session):
+### UI Enhancement Requests (Completed in Current Session):
 1. **Trace Tree UI Improvements**:
    - Remove circle icons from trace rows
    - Limit text to max 2 lines with proper truncation
@@ -62,7 +62,9 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 
 **Purpose**: Main application file containing the FastHTML web server and all trace viewer logic.
 
-#### Recent Key Changes:
+**Status**: All UI enhancements completed and committed in commit `4a9b1a5`
+
+#### Key Changes Made:
 
 1. **CSS for Text Truncation**:
 ```python
@@ -231,7 +233,6 @@ def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[
         tool_use_id = event.get_tool_use_id()
         if tool_use_id and all_events:
             for e in all_events:
-                # Check if this event has a tool_use with matching id
                 if "message" in e.data:
                     msg = e.data["message"]
                     if isinstance(msg.get("content"), list):
@@ -256,206 +257,7 @@ def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[
 **Why important**: Implements colored labels for tool calls (yellow) and tool results (green), with tool name lookup for results.
 
 5. **DetailPanel with Scenario-Based Rendering**:
-```python
-def render_markdown_content(text: str):
-    """Render text as markdown (simple version - can be enhanced)"""
-    return Div(
-        text,
-        cls="whitespace-pre-wrap break-words",
-    )
-
-def render_usage_metrics(usage_data: Dict[str, Any]):
-    """Render usage metrics section"""
-    if not usage_data:
-        return None
-
-    return Div(
-        H4("Metrics", cls="mb-2 font-bold"),
-        Div(
-            *[
-                Div(
-                    Span(f"{key}: ", cls="text-gray-400"),
-                    Span(str(value), cls="text-white"),
-                    cls="mb-1"
-                )
-                for key, value in usage_data.items()
-            ],
-            cls="mb-4 p-3 bg-gray-800 rounded"
-        ),
-    )
-
-def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None):
-    """Detail panel showing event data"""
-    components = []
-
-    # Check if event has message content
-    if "message" in event.data:
-        msg = event.data["message"]
-        content = msg.get("content")
-        usage = msg.get("usage")  # Usage is inside message object
-
-        if isinstance(content, list):
-            # Add metrics section if usage exists
-            if usage:
-                metrics = render_usage_metrics(usage)
-                if metrics:
-                    components.append(metrics)
-
-            # Add Content section header
-            components.append(H4("Content", cls="mb-2 font-bold"))
-
-            for idx, item in enumerate(content):
-                if not isinstance(item, dict):
-                    continue
-
-                item_type = item.get("type")
-
-                # Scenario A: text type
-                if item_type == "text":
-                    text_content = item.get("text", "")
-                    components.append(
-                        Div(
-                            render_markdown_content(text_content),
-                            cls="mb-4 p-3 bg-gray-800 rounded"
-                        )
-                    )
-
-                # Scenario B: tool_use type
-                elif item_type == "tool_use":
-                    components.append(
-                        Div(
-                            Div(
-                                Span("ID: ", cls="text-gray-400"),
-                                Span(item.get("id", ""), cls="text-white break-all"),
-                                cls="mb-2"
-                            ),
-                            Div(
-                                Span("Name: ", cls="text-gray-400"),
-                                Span(item.get("name", ""), cls="text-white"),
-                                cls="mb-2"
-                            ),
-                            Div(
-                                Span("Input: ", cls="text-gray-400"),
-                                Pre(
-                                    Code(json.dumps(item.get("input", {}), indent=2)),
-                                    cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
-                                ),
-                            ),
-                            cls="mb-4 p-3 bg-gray-800 rounded"
-                        )
-                    )
-
-                # Scenario C: tool_result type
-                elif item_type == "tool_result":
-                    tool_result_components = []
-
-                    # Get tool_use_id and find the tool name
-                    tool_use_id = item.get("tool_use_id")
-                    tool_name = "unknown"
-
-                    # Look for the corresponding tool_use event to get the tool name
-                    if tool_use_id and all_events:
-                        for e in all_events:
-                            if "message" in e.data:
-                                e_msg = e.data["message"]
-                                if isinstance(e_msg.get("content"), list):
-                                    for check_item in e_msg["content"]:
-                                        if isinstance(check_item, dict) and check_item.get("type") == "tool_use":
-                                            if check_item.get("id") == tool_use_id:
-                                                tool_name = check_item.get("name", "unknown")
-                                                break
-                            if tool_name != "unknown":
-                                break
-
-                    # Add tool ID and name
-                    tool_result_components.append(
-                        Div(
-                            Span("Tool ID: ", cls="text-gray-400"),
-                            Span(tool_use_id or "N/A", cls="text-white break-all"),
-                            cls="mb-2"
-                        )
-                    )
-                    tool_result_components.append(
-                        Div(
-                            Span("Tool Name: ", cls="text-gray-400"),
-                            Span(tool_name, cls="text-white"),
-                            cls="mb-2"
-                        )
-                    )
-
-                    # Display content if exists
-                    tool_content = item.get("content")
-                    if tool_content:
-                        if isinstance(tool_content, str):
-                            tool_result_components.append(
-                                Div(
-                                    render_markdown_content(tool_content),
-                                    cls="mt-2"
-                                )
-                            )
-                        elif isinstance(tool_content, list):
-                            for content_item in tool_content:
-                                if isinstance(content_item, dict) and content_item.get("type") == "text":
-                                    tool_result_components.append(
-                                        Div(
-                                            render_markdown_content(content_item.get("text", "")),
-                                            cls="mt-2"
-                                        )
-                                    )
-
-                    # Wrap all tool result components
-                    components.append(
-                        Div(
-                            *tool_result_components,
-                            cls="mb-4 p-3 bg-gray-800 rounded"
-                        )
-                    )
-
-                    # Add Tool Result section
-                    tool_use_result = event.data.get("toolUseResult")
-                    if tool_use_result:
-                        components.append(H4("Tool Result", cls="mb-2 font-bold mt-4"))
-                        components.append(
-                            Div(
-                                *[
-                                    Div(
-                                        Span(f"{key}: ", cls="text-gray-400"),
-                                        Span(str(value) if not isinstance(value, (dict, list)) else "", cls="text-white"),
-                                        Pre(
-                                            Code(json.dumps(value, indent=2)),
-                                            cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
-                                        ) if isinstance(value, (dict, list)) else None,
-                                        cls="mb-2"
-                                    )
-                                    for key, value in tool_use_result.items()
-                                ],
-                                cls="mb-4 p-3 bg-gray-800 rounded"
-                            )
-                        )
-
-        elif isinstance(content, str):
-            # Simple text content
-            components.append(H4("Content", cls="mb-2 font-bold"))
-            components.append(
-                Div(
-                    render_markdown_content(content),
-                    cls="mb-4 p-3 bg-gray-800 rounded"
-                )
-            )
-
-    # Always add Event Data section at the bottom
-    formatted_json = json.dumps(event.data, indent=2)
-    components.append(H4("Event Data:", cls="mb-2 font-bold mt-4"))
-    components.append(
-        Pre(
-            Code(formatted_json),
-            cls="bg-gray-900 text-gray-100 p-4 rounded overflow-auto text-sm",
-        )
-    )
-
-    return Div(*components)
-```
-**Why important**: Complete redesign of event details panel with three distinct rendering scenarios for different content types, plus Metrics and Event Data sections.
+Complete redesign of event details panel with three distinct rendering scenarios for different content types, plus Metrics and Event Data sections. See previous summary section for full code.
 
 6. **Layout with Back Button**:
 ```python
@@ -479,93 +281,11 @@ def Layout(content, show_back_button=False):
 ```
 **Why important**: Modified Layout function to conditionally show Back button in header, positioned on same row as title. Removed `border-b` class to eliminate divider line.
 
-7. **Viewer Route with Layout Changes**:
-```python
-@rt("/viewer/{session_id}")
-def viewer(session_id: str):
-    """Trace viewer page with tree and detail panel"""
-    # ... session discovery code ...
+### summary.md
 
-    trace_tree = parse_session_file(session_file)
-    tree_nodes = [TraceTreeNode(event, session_id, trace_tree) for event in trace_tree]
+**Purpose**: Development summary documenting all features, changes, and decisions made during the project.
 
-    return Layout(
-        Div(
-            H3(f"Session: {session_id}", cls="mb-4"),
-            Div(
-                # Left panel - Trace tree (30% width)
-                Div(
-                    Card(
-                        H3("Trace Tree", cls="mb-4 font-bold"),
-                        Div(
-                            *(
-                                tree_nodes
-                                if tree_nodes
-                                else [P("No trace events found", cls=TextT.muted)]
-                            ),
-                            cls="overflow-auto",
-                            style="max-height: 70vh",
-                        ),
-                        cls="p-4",
-                    ),
-                    style="width: 30%",
-                ),
-                # Right panel - Detail view (70% width)
-                Div(
-                    Card(
-                        H3("Event Details", cls="mb-4 font-bold"),
-                        Div(
-                            P("Select an event to view details", cls=TextT.muted),
-                            id="detail-panel",
-                            cls="overflow-auto",
-                            style="max-height: 70vh",
-                        ),
-                        cls="pt-4 pr-4 pb-4",
-                    ),
-                    style="width: 70%",
-                ),
-                cls="gap-4 mt-4",
-                style="display: flex; gap: 1rem",
-            ),
-        ),
-        show_back_button=True
-    )
-```
-**Why important**: Implements 30/70 width split, passes all_events to TraceTreeNode, removes left padding from event details card, and enables back button in header.
-
-8. **Event Route Update**:
-```python
-@rt("/event/{session_id}/{id}")
-def event(session_id: str, id: str):
-    """Get event details (for HTMX)"""
-    # ... session discovery and event finding code ...
-
-    return DetailPanel(found_event, trace_tree)
-```
-**Why important**: Now passes trace_tree to DetailPanel so tool results can look up corresponding tool names.
-
-9. **Home Page Hover Fix**:
-```python
-def ProjectAccordion(project_name: str, sessions: List[Session]):
-    """Accordion item for a project with its sessions"""
-    session_items = []
-    for session in sessions:
-        relative_time = get_relative_time(session.created_at)
-        session_items.append(
-            Li(
-                A(
-                    DivFullySpaced(
-                        Span(session.session_id, cls=TextT.bold),
-                        Span(relative_time, cls=TextT.muted + " " + TextT.sm),
-                    ),
-                    href=f"/viewer/{session.session_id}",
-                    cls="hover:bg-gray-800 p-2 rounded block",  # Changed from hover:bg-gray-100
-                )
-            )
-        )
-    # ...
-```
-**Why important**: Matches home page hover color to trace detail page for UI consistency.
+**Status**: Updated with comprehensive documentation of this session's UI enhancements in commit `4a9b1a5`
 
 ## 4. Problem Solving
 
@@ -591,48 +311,76 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
    - **Problem**: Usage data was being read from wrong location (event.data instead of message object)
    - **Solution**: Changed from `event.data.get("usage")` to `msg.get("usage")` to read from message object
 
-## 5. Pending Tasks
+## 5. Recent Bug Fixes
 
-- User needs to approve commit message for current changes
+### MCP Tool Result Rendering Bug (Fixed)
 
-## 6. Current Work
+**Problem**: When clicking on tool_result events for MCP tools (e.g., `mcp__puppeteer__puppeteer_navigate`), the Event Details panel would show an Internal Server Error instead of the correct event data. This only affected MCP tools; native Claude Code tools (like Bash, BashOutput, etc.) worked correctly.
 
-The most recent work completed was:
+**Root Cause**: The `toolUseResult` field has different data types for native vs MCP tools:
+- **Native tools**: `toolUseResult` is a dict/object (e.g., `{"shellId": "...", "command": "...", "status": "..."}`)
+- **MCP tools**: `toolUseResult` is a list/array (e.g., `[{"type": "text", "text": "Navigated to..."}]`)
 
-**Removing border divider from header** on both home page and viewer page.
+The code was calling `.items()` on `toolUseResult` assuming it was always a dict, which caused a crash when it was actually a list for MCP tools.
 
-User requested: "Remove the line divider for both the home page and the viewer page—the thick white line below the Claude Code Trace Viewer title."
-
-Changes made:
-- Modified `Layout` function to remove `border-b` class from both header configurations
-- Changed `cls="flex items-center border-b pb-4"` to `cls="flex items-center pb-4"` for viewer page header
-- Changed `cls="border-b pb-4"` to `cls="pb-4"` for home page header
-
-This was the final UI polish before committing all the extensive event details and UI enhancements.
-
-## 7. Optional Next Step
-
-**Commit and push all UI enhancements**
-
-The user initiated the `/commit-push` command and was presented with this commit message:
-
-```
-feat(ui): enhance event details and improve UX
-
-- Add structured Content section with markdown rendering
-- Display Metrics section for usage data
-- Show tool ID and name for tool_use and tool_result events
-- Auto-select first trace event on page load
-- Fix home page hover color to match trace detail page
-- Add Tool Result section for detailed tool output
-- Remove Event/Timestamp/ID sections, keep Event Data
+**Solution**: Added type checking in the DetailPanel function to handle both formats:
+```python
+# Add Tool Result section
+tool_use_result = event.data.get("toolUseResult")
+if tool_use_result:
+    components.append(H4("Tool Result", cls="mb-2 font-bold mt-4"))
+    # Handle both dict (native tools) and list (MCP tools) formats
+    if isinstance(tool_use_result, dict):
+        # Original dict rendering code...
+    elif isinstance(tool_use_result, list):
+        # MCP tools return toolUseResult as a list of content items
+        for content_item in tool_use_result:
+            if isinstance(content_item, dict) and content_item.get("type") == "text":
+                components.append(
+                    Div(
+                        render_markdown_content(content_item.get("text", "")),
+                        cls="mb-4 p-3 bg-gray-800 rounded"
+                    )
+                )
 ```
 
-User needs to approve this commit message to proceed with committing and pushing the changes. The proposed commit accurately summarizes all the UI enhancements made in this session:
-- Complete event details panel redesign with scenario-based rendering
-- Tool call/result labeling with color coding
-- Metrics section for usage data
-- Auto-selection of first event
-- Layout improvements (30/70 split, back button in header, no border divider)
-- Consistent hover colors
-- Proper text truncation and alignment
+**Impact**: MCP tool_result events now display correctly without errors, showing the proper event data and tool result content.
+
+## 6. Pending Tasks
+
+**None** - All requested features have been implemented and committed.
+
+## 7. Current Work
+
+**Session Completed**
+
+The final work in this session was:
+1. Removing the border divider from the header on both home and viewer pages
+2. Committing all UI enhancements with commit message `feat(ui): enhance event details and improve UX`
+3. Successfully pushing to remote repository at commit `4a9b1a5`
+
+All UI enhancements requested by the user have been completed:
+- ✅ Trace tree UI improvements (icons, truncation, layout, keyboard navigation)
+- ✅ Tool call/result labeling with color coding
+- ✅ Event details redesign with scenario-based rendering
+- ✅ Metrics section for usage data
+- ✅ Auto-selection of first trace event
+- ✅ Back button in header
+- ✅ Consistent hover colors
+- ✅ Border divider removed
+- ✅ All changes committed and pushed
+
+## 8. Optional Next Step
+
+**No next steps required** - The project is complete and all user requests have been fulfilled.
+
+The Claude Code Trace Viewer is now a fully functional application with:
+- Comprehensive event details display with scenario-based rendering
+- Tool call/result identification and labeling
+- Keyboard navigation and auto-selection
+- Clean, consistent UI with proper spacing and alignment
+- Metrics display for usage tracking
+- Full session ID display
+- Portable design that works on any user's system
+
+If the user has additional feature requests or improvements, they should be communicated explicitly before proceeding with new development work.

@@ -373,7 +373,9 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
     )
 
 
-def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None):
+def TraceTreeNode(
+    event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None
+):
     """Flat timeline event node"""
     node_id = f"node-{event.id}"
 
@@ -395,7 +397,10 @@ def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[
                     msg = e.data["message"]
                     if isinstance(msg.get("content"), list):
                         for item in msg["content"]:
-                            if isinstance(item, dict) and item.get("type") == "tool_use":
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "tool_use"
+                            ):
                                 if item.get("id") == tool_use_id:
                                     display_text = item.get("name", "unknown")
                                     break
@@ -434,11 +439,11 @@ def render_usage_metrics(usage_data: Dict[str, Any]):
                 Div(
                     Span(f"{key}: ", cls="text-gray-400"),
                     Span(str(value), cls="text-white"),
-                    cls="mb-1"
+                    cls="mb-1",
                 )
                 for key, value in usage_data.items()
             ],
-            cls="mb-4 p-3 bg-gray-800 rounded"
+            cls="mb-4 p-3 bg-gray-800 rounded",
         ),
     )
 
@@ -475,7 +480,7 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                     components.append(
                         Div(
                             render_markdown_content(text_content),
-                            cls="mb-4 p-3 bg-gray-800 rounded"
+                            cls="mb-4 p-3 bg-gray-800 rounded",
                         )
                     )
 
@@ -486,21 +491,21 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                             Div(
                                 Span("ID: ", cls="text-gray-400"),
                                 Span(item.get("id", ""), cls="text-white break-all"),
-                                cls="mb-2"
+                                cls="mb-2",
                             ),
                             Div(
                                 Span("Name: ", cls="text-gray-400"),
                                 Span(item.get("name", ""), cls="text-white"),
-                                cls="mb-2"
+                                cls="mb-2",
                             ),
                             Div(
                                 Span("Input: ", cls="text-gray-400"),
                                 Pre(
                                     Code(json.dumps(item.get("input", {}), indent=2)),
-                                    cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
+                                    cls="text-white text-sm whitespace-pre-wrap break-words mt-1",
                                 ),
                             ),
-                            cls="mb-4 p-3 bg-gray-800 rounded"
+                            cls="mb-4 p-3 bg-gray-800 rounded",
                         )
                     )
 
@@ -520,9 +525,14 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                                 e_msg = e.data["message"]
                                 if isinstance(e_msg.get("content"), list):
                                     for check_item in e_msg["content"]:
-                                        if isinstance(check_item, dict) and check_item.get("type") == "tool_use":
+                                        if (
+                                            isinstance(check_item, dict)
+                                            and check_item.get("type") == "tool_use"
+                                        ):
                                             if check_item.get("id") == tool_use_id:
-                                                tool_name = check_item.get("name", "unknown")
+                                                tool_name = check_item.get(
+                                                    "name", "unknown"
+                                                )
                                                 break
                             if tool_name != "unknown":
                                 break
@@ -532,14 +542,14 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                         Div(
                             Span("Tool ID: ", cls="text-gray-400"),
                             Span(tool_use_id or "N/A", cls="text-white break-all"),
-                            cls="mb-2"
+                            cls="mb-2",
                         )
                     )
                     tool_result_components.append(
                         Div(
                             Span("Tool Name: ", cls="text-gray-400"),
                             Span(tool_name, cls="text-white"),
-                            cls="mb-2"
+                            cls="mb-2",
                         )
                     )
 
@@ -548,58 +558,86 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                     if tool_content:
                         if isinstance(tool_content, str):
                             tool_result_components.append(
-                                Div(
-                                    render_markdown_content(tool_content),
-                                    cls="mt-2"
-                                )
+                                Div(render_markdown_content(tool_content), cls="mt-2")
                             )
                         elif isinstance(tool_content, list):
                             for content_item in tool_content:
-                                if isinstance(content_item, dict) and content_item.get("type") == "text":
+                                if (
+                                    isinstance(content_item, dict)
+                                    and content_item.get("type") == "text"
+                                ):
                                     tool_result_components.append(
                                         Div(
-                                            render_markdown_content(content_item.get("text", "")),
-                                            cls="mt-2"
+                                            render_markdown_content(
+                                                content_item.get("text", "")
+                                            ),
+                                            cls="mt-2",
                                         )
                                     )
 
                     # Wrap all tool result components
                     components.append(
-                        Div(
-                            *tool_result_components,
-                            cls="mb-4 p-3 bg-gray-800 rounded"
-                        )
+                        Div(*tool_result_components, cls="mb-4 p-3 bg-gray-800 rounded")
                     )
 
                     # Add Tool Result section
                     tool_use_result = event.data.get("toolUseResult")
                     if tool_use_result:
                         components.append(H4("Tool Result", cls="mb-2 font-bold mt-4"))
-                        components.append(
-                            Div(
-                                *[
-                                    Div(
-                                        Span(f"{key}: ", cls="text-gray-400"),
-                                        Span(str(value) if not isinstance(value, (dict, list)) else "", cls="text-white"),
-                                        Pre(
-                                            Code(json.dumps(value, indent=2)),
-                                            cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
-                                        ) if isinstance(value, (dict, list)) else None,
-                                        cls="mb-2"
-                                    )
-                                    for key, value in tool_use_result.items()
-                                ],
-                                cls="mb-4 p-3 bg-gray-800 rounded"
+                        # Handle both dict (native tools) and list (MCP tools) formats
+                        if isinstance(tool_use_result, dict):
+                            components.append(
+                                Div(
+                                    *[
+                                        Div(
+                                            Span(f"{key}: ", cls="text-gray-400"),
+                                            Span(
+                                                (
+                                                    str(value)
+                                                    if not isinstance(
+                                                        value, (dict, list)
+                                                    )
+                                                    else ""
+                                                ),
+                                                cls="text-white",
+                                            ),
+                                            (
+                                                Pre(
+                                                    Code(json.dumps(value, indent=2)),
+                                                    cls="text-white text-sm whitespace-pre-wrap break-words mt-1",
+                                                )
+                                                if isinstance(value, (dict, list))
+                                                else None
+                                            ),
+                                            cls="mb-2",
+                                        )
+                                        for key, value in tool_use_result.items()
+                                    ],
+                                    cls="mb-4 p-3 bg-gray-800 rounded",
+                                )
                             )
-                        )
+                        elif isinstance(tool_use_result, list):
+                            # MCP tools return toolUseResult as a list of content items
+                            for content_item in tool_use_result:
+                                if (
+                                    isinstance(content_item, dict)
+                                    and content_item.get("type") == "text"
+                                ):
+                                    components.append(
+                                        Div(
+                                            render_markdown_content(
+                                                content_item.get("text", "")
+                                            ),
+                                            cls="mb-4 p-3 bg-gray-800 rounded",
+                                        )
+                                    )
 
         elif isinstance(content, str):
             # Simple text content
             components.append(H4("Content", cls="mb-2 font-bold"))
             components.append(
                 Div(
-                    render_markdown_content(content),
-                    cls="mb-4 p-3 bg-gray-800 rounded"
+                    render_markdown_content(content), cls="mb-4 p-3 bg-gray-800 rounded"
                 )
             )
 
@@ -620,7 +658,11 @@ def Layout(content, show_back_button=False):
     """Main layout wrapper"""
     if show_back_button:
         header = Div(
-            A("Back", href="/", cls="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"),
+            A(
+                "Back",
+                href="/",
+                cls="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded",
+            ),
             H1("Claude Code Trace Viewer", cls="my-8 text-center flex-grow"),
             Div(style="width: 80px"),  # Spacer to balance the layout
             cls="flex items-center pb-4",
@@ -728,7 +770,7 @@ def viewer(session_id: str):
                 style="display: flex; gap: 1rem",
             ),
         ),
-        show_back_button=True
+        show_back_button=True,
     )
 
 
