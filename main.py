@@ -64,6 +64,14 @@ custom_css = Style(
 selection_script = Script(
     """
     document.addEventListener('DOMContentLoaded', function() {
+        // Auto-select first trace event on page load
+        setTimeout(function() {
+            var events = document.querySelectorAll('.trace-event');
+            if (events.length > 0) {
+                htmx.trigger(events[0], 'click');
+            }
+        }, 100);
+
         // Handle selection on HTMX request
         document.body.addEventListener('htmx:beforeRequest', function(evt) {
             if (evt.detail.elt.classList.contains('trace-event')) {
@@ -354,7 +362,7 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
                         Span(relative_time, cls=TextT.muted + " " + TextT.sm),
                     ),
                     href=f"/viewer/{session.session_id}",
-                    cls="hover:bg-gray-100 p-2 rounded block",
+                    cls="hover:bg-gray-800 p-2 rounded block",
                 )
             )
         )
@@ -405,26 +413,223 @@ def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[
     )
 
 
-def DetailPanel(event: TraceEvent):
-    """Detail panel showing event data"""
-    formatted_json = json.dumps(event.data, indent=2)
+def render_markdown_content(text: str):
+    """Render text as markdown (simple version - can be enhanced)"""
+    # For now, return as pre-formatted text with word wrap
+    return Div(
+        text,
+        cls="whitespace-pre-wrap break-words",
+    )
+
+
+def render_usage_metrics(usage_data: Dict[str, Any]):
+    """Render usage metrics section"""
+    if not usage_data:
+        return None
 
     return Div(
-        H3(f"Event: {event.event_type}", cls="mb-4"),
-        P(f"Timestamp: {event.timestamp}", cls=TextT.muted + " mb-2"),
-        P(f"ID: {event.id}", cls=TextT.muted + " mb-4"),
-        H4("Event Data:", cls="mb-2"),
-        Pre(
-            Code(formatted_json),
-            cls="bg-gray-900 text-gray-100 p-4 rounded overflow-auto text-sm",
+        H4("Metrics", cls="mb-2 font-bold"),
+        Div(
+            *[
+                Div(
+                    Span(f"{key}: ", cls="text-gray-400"),
+                    Span(str(value), cls="text-white"),
+                    cls="mb-1"
+                )
+                for key, value in usage_data.items()
+            ],
+            cls="mb-4 p-3 bg-gray-800 rounded"
         ),
     )
 
 
-def Layout(content):
+def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None):
+    """Detail panel showing event data"""
+    components = []
+
+    # Check if event has message content
+    if "message" in event.data:
+        msg = event.data["message"]
+        content = msg.get("content")
+        usage = msg.get("usage")  # Usage is inside message object
+
+        if isinstance(content, list):
+            # Add metrics section if usage exists
+            if usage:
+                metrics = render_usage_metrics(usage)
+                if metrics:
+                    components.append(metrics)
+
+            # Add Content section header
+            components.append(H4("Content", cls="mb-2 font-bold"))
+
+            for idx, item in enumerate(content):
+                if not isinstance(item, dict):
+                    continue
+
+                item_type = item.get("type")
+
+                # Scenario A: text type
+                if item_type == "text":
+                    text_content = item.get("text", "")
+                    components.append(
+                        Div(
+                            render_markdown_content(text_content),
+                            cls="mb-4 p-3 bg-gray-800 rounded"
+                        )
+                    )
+
+                # Scenario B: tool_use type
+                elif item_type == "tool_use":
+                    components.append(
+                        Div(
+                            Div(
+                                Span("ID: ", cls="text-gray-400"),
+                                Span(item.get("id", ""), cls="text-white break-all"),
+                                cls="mb-2"
+                            ),
+                            Div(
+                                Span("Name: ", cls="text-gray-400"),
+                                Span(item.get("name", ""), cls="text-white"),
+                                cls="mb-2"
+                            ),
+                            Div(
+                                Span("Input: ", cls="text-gray-400"),
+                                Pre(
+                                    Code(json.dumps(item.get("input", {}), indent=2)),
+                                    cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
+                                ),
+                            ),
+                            cls="mb-4 p-3 bg-gray-800 rounded"
+                        )
+                    )
+
+                # Scenario C: tool_result type
+                elif item_type == "tool_result":
+                    tool_result_components = []
+
+                    # Get tool_use_id and find the tool name
+                    tool_use_id = item.get("tool_use_id")
+                    tool_name = "unknown"
+
+                    # Look for the corresponding tool_use event to get the tool name
+                    # Search through all events (same logic as TraceTreeNode)
+                    if tool_use_id and all_events:
+                        for e in all_events:
+                            if "message" in e.data:
+                                e_msg = e.data["message"]
+                                if isinstance(e_msg.get("content"), list):
+                                    for check_item in e_msg["content"]:
+                                        if isinstance(check_item, dict) and check_item.get("type") == "tool_use":
+                                            if check_item.get("id") == tool_use_id:
+                                                tool_name = check_item.get("name", "unknown")
+                                                break
+                            if tool_name != "unknown":
+                                break
+
+                    # Add tool ID and name
+                    tool_result_components.append(
+                        Div(
+                            Span("Tool ID: ", cls="text-gray-400"),
+                            Span(tool_use_id or "N/A", cls="text-white break-all"),
+                            cls="mb-2"
+                        )
+                    )
+                    tool_result_components.append(
+                        Div(
+                            Span("Tool Name: ", cls="text-gray-400"),
+                            Span(tool_name, cls="text-white"),
+                            cls="mb-2"
+                        )
+                    )
+
+                    # Display content if exists
+                    tool_content = item.get("content")
+                    if tool_content:
+                        if isinstance(tool_content, str):
+                            tool_result_components.append(
+                                Div(
+                                    render_markdown_content(tool_content),
+                                    cls="mt-2"
+                                )
+                            )
+                        elif isinstance(tool_content, list):
+                            for content_item in tool_content:
+                                if isinstance(content_item, dict) and content_item.get("type") == "text":
+                                    tool_result_components.append(
+                                        Div(
+                                            render_markdown_content(content_item.get("text", "")),
+                                            cls="mt-2"
+                                        )
+                                    )
+
+                    # Wrap all tool result components
+                    components.append(
+                        Div(
+                            *tool_result_components,
+                            cls="mb-4 p-3 bg-gray-800 rounded"
+                        )
+                    )
+
+                    # Add Tool Result section
+                    tool_use_result = event.data.get("toolUseResult")
+                    if tool_use_result:
+                        components.append(H4("Tool Result", cls="mb-2 font-bold mt-4"))
+                        components.append(
+                            Div(
+                                *[
+                                    Div(
+                                        Span(f"{key}: ", cls="text-gray-400"),
+                                        Span(str(value) if not isinstance(value, (dict, list)) else "", cls="text-white"),
+                                        Pre(
+                                            Code(json.dumps(value, indent=2)),
+                                            cls="text-white text-sm whitespace-pre-wrap break-words mt-1"
+                                        ) if isinstance(value, (dict, list)) else None,
+                                        cls="mb-2"
+                                    )
+                                    for key, value in tool_use_result.items()
+                                ],
+                                cls="mb-4 p-3 bg-gray-800 rounded"
+                            )
+                        )
+
+        elif isinstance(content, str):
+            # Simple text content
+            components.append(H4("Content", cls="mb-2 font-bold"))
+            components.append(
+                Div(
+                    render_markdown_content(content),
+                    cls="mb-4 p-3 bg-gray-800 rounded"
+                )
+            )
+
+    # Always add Event Data section at the bottom
+    formatted_json = json.dumps(event.data, indent=2)
+    components.append(H4("Event Data:", cls="mb-2 font-bold mt-4"))
+    components.append(
+        Pre(
+            Code(formatted_json),
+            cls="bg-gray-900 text-gray-100 p-4 rounded overflow-auto text-sm",
+        )
+    )
+
+    return Div(*components)
+
+
+def Layout(content, show_back_button=False):
     """Main layout wrapper"""
+    if show_back_button:
+        header = Div(
+            A("Back", href="/", cls="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"),
+            H1("Claude Code Trace Viewer", cls="my-8 text-center flex-grow"),
+            Div(style="width: 80px"),  # Spacer to balance the layout
+            cls="flex items-center pb-4",
+        )
+    else:
+        header = DivCentered(H1("Claude Code Trace Viewer", cls="my-8"), cls="pb-4")
+
     return Container(
-        DivCentered(H1("Claude Code Trace Viewer", cls="my-8"), cls="border-b pb-4"),
+        header,
         content,
         cls="min-h-screen",
     )
@@ -486,11 +691,7 @@ def viewer(session_id: str):
 
     return Layout(
         Div(
-            DivFullySpaced(
-                H3(f"Session: {session_id}", cls="mb-4"),
-                A("← Back to Home", href="/", cls=AT.primary),
-                cls="mb-4",
-            ),
+            H3(f"Session: {session_id}", cls="mb-4"),
             Div(
                 # Left panel - Trace tree (30% width)
                 Div(
@@ -526,7 +727,8 @@ def viewer(session_id: str):
                 cls="gap-4 mt-4",
                 style="display: flex; gap: 1rem",
             ),
-        )
+        ),
+        show_back_button=True
     )
 
 
@@ -568,7 +770,7 @@ def event(session_id: str, id: str):
             cls="p-4",
         )
 
-    return DetailPanel(found_event)
+    return DetailPanel(found_event, trace_tree)
 
 
 # Start server
