@@ -171,6 +171,26 @@ class TraceEvent:
                         return item.get("name", "unknown")
         return ""
 
+    def is_thinking(self) -> bool:
+        """Check if this event contains thinking content"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "thinking":
+                        return True
+        return False
+
+    def get_thinking_text(self) -> str:
+        """Get thinking text from message content"""
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "thinking":
+                        return item.get("thinking", "")
+        return ""
+
     def get_display_text(self) -> str:
         """Get human-readable text for display"""
         # For summary type
@@ -193,6 +213,11 @@ class TraceEvent:
                         elif item.get("type") == "tool_result":
                             # Will be set by TraceTreeNode with proper lookup
                             return "tool_result"
+                        elif item.get("type") == "thinking":
+                            # Return first 2 lines of thinking text
+                            thinking_text = item.get("thinking", "")
+                            lines = thinking_text.split('\n')
+                            return '\n'.join(lines[:2])
                 return "Multiple content items"
 
         # For system events
@@ -391,8 +416,12 @@ def TraceTreeNode(
 
     display_text = event.get_display_text()
 
+    # Check if this is a thinking event
+    if event.is_thinking():
+        label = "thinking"
+        label_color = "text-xs text-blue-500"
     # Check if this is a tool call
-    if event.is_tool_call():
+    elif event.is_tool_call():
         label = "tool call"
         label_color = "text-xs text-yellow-500"
     elif event.is_tool_result():
@@ -490,6 +519,16 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                     components.append(
                         Div(
                             render_markdown_content(text_content),
+                            cls="mb-4 p-3 bg-gray-800 rounded",
+                        )
+                    )
+
+                # Scenario D: thinking type
+                elif item_type == "thinking":
+                    thinking_text = item.get("thinking", "")
+                    components.append(
+                        Div(
+                            render_markdown_content(thinking_text),
                             cls="mb-4 p-3 bg-gray-800 rounded",
                         )
                     )

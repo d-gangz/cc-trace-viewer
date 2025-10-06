@@ -61,6 +61,16 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 4. **Panel Height Adjustment**:
    - Increase panel height from 70vh to 75vh for better visibility
 
+### Session 4 - Thinking Event Support:
+1. **Trace Tree Thinking Events**:
+   - Detect events with "thinking" type in message content array
+   - Display "thinking" label in blue color (text-blue-500)
+   - Show first 2 lines of thinking text in trace tree
+
+2. **Event Details Thinking Rendering**:
+   - Render full thinking text in Content section
+   - Use same rendering pattern as text content type
+
 ## 2. Key Technical Concepts
 
 - **FastHTML**: Modern Python web framework for building web applications
@@ -77,6 +87,7 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 - **CSS Variables**: Using `var(--uk-border-default)` for consistent theming
 - **Height vs max-height**: Understanding difference for panel sizing
 - **MonsterUI Card Architecture**: Card wraps content in CardBody which adds padding
+- **Content type detection**: Detecting thinking, text, tool_use, tool_result, image types in message content arrays
 
 ## 3. Files and Code Sections
 
@@ -84,7 +95,177 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 
 **Purpose**: Main application file containing the FastHTML web server and all trace viewer logic.
 
-#### Recent Changes (Session 3):
+#### Recent Changes (Session 4 - Thinking Event Support):
+
+**1. TraceEvent Class - Added Thinking Detection Methods**
+
+Added helper methods to detect and extract thinking content:
+
+```python
+def is_thinking(self) -> bool:
+    """Check if this event contains thinking content"""
+    if "message" in self.data:
+        msg = self.data["message"]
+        if isinstance(msg.get("content"), list):
+            for item in msg["content"]:
+                if isinstance(item, dict) and item.get("type") == "thinking":
+                    return True
+    return False
+
+def get_thinking_text(self) -> str:
+    """Get thinking text from message content"""
+    if "message" in self.data:
+        msg = self.data["message"]
+        if isinstance(msg.get("content"), list):
+            for item in msg["content"]:
+                if isinstance(item, dict) and item.get("type") == "thinking":
+                    return item.get("thinking", "")
+    return ""
+```
+
+**Why important**:
+- Enables detection of thinking events in message content arrays
+- Provides clean API for extracting thinking text
+- Follows same pattern as `is_tool_call()` and `is_tool_result()`
+
+**2. TraceEvent.get_display_text() - Handle Thinking Type**
+
+Updated display text extraction to handle thinking content:
+
+```python
+def get_display_text(self) -> str:
+    """Get human-readable text for display"""
+    # ... existing code ...
+    elif isinstance(msg.get("content"), list):
+        # Handle content array (tool uses, etc)
+        for item in msg["content"]:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    return item.get("text", "")[:200]
+                elif item.get("type") == "tool_use":
+                    return item.get("name", "unknown")
+                elif item.get("type") == "tool_result":
+                    return "tool_result"
+                elif item.get("type") == "thinking":
+                    # Return first 2 lines of thinking text
+                    thinking_text = item.get("thinking", "")
+                    lines = thinking_text.split('\n')
+                    return '\n'.join(lines[:2])
+        return "Multiple content items"
+```
+
+**Why important**:
+- Extracts first 2 lines of thinking text for trace tree display
+- Uses split('\n')[:2] to limit to two lines
+- Maintains same truncation pattern as other content types
+
+**3. TraceTreeNode Function - Thinking Event Label and Color**
+
+Added thinking event detection with blue label:
+
+```python
+def TraceTreeNode(
+    event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None
+):
+    """Flat timeline event node"""
+    node_id = f"node-{event.id}"
+
+    display_text = event.get_display_text()
+
+    # Check if this is a thinking event
+    if event.is_thinking():
+        label = "thinking"
+        label_color = "text-xs text-blue-500"
+    # Check if this is a tool call
+    elif event.is_tool_call():
+        label = "tool call"
+        label_color = "text-xs text-yellow-500"
+    elif event.is_tool_result():
+        label = "tool result"
+        label_color = "text-xs text-green-500"
+        # ... tool name lookup logic ...
+    else:
+        label = event.event_type
+        label_color = "text-xs text-gray-500"
+
+    return Div(
+        Span(label, cls=label_color),
+        Span(display_text),
+        cls="trace-event",
+        hx_get=f"/event/{session_id}/{event.id}",
+        hx_target="#detail-panel",
+        id=node_id,
+    )
+```
+
+**Why important**:
+- Checks for thinking events BEFORE tool calls (order matters)
+- Uses blue color (text-blue-500) to distinguish from other event types
+- Displays "thinking" label in eyebrow position
+- Display text already contains first 2 lines from get_display_text()
+
+**4. DetailPanel Function - Thinking Content Rendering**
+
+Added thinking type rendering in Content section:
+
+```python
+def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None):
+    """Detail panel showing event data"""
+    components = []
+
+    if "message" in event.data:
+        msg = event.data["message"]
+        content = msg.get("content")
+        usage = msg.get("usage")
+
+        if isinstance(content, list):
+            # Add metrics section if usage exists
+            if usage:
+                metrics = render_usage_metrics(usage)
+                if metrics:
+                    components.append(metrics)
+
+            # Add Content section header
+            components.append(H4("Content", cls="mb-2 font-bold"))
+
+            for idx, item in enumerate(content):
+                if not isinstance(item, dict):
+                    continue
+
+                item_type = item.get("type")
+
+                # Scenario A: text type
+                if item_type == "text":
+                    text_content = item.get("text", "")
+                    components.append(
+                        Div(
+                            render_markdown_content(text_content),
+                            cls="mb-4 p-3 bg-gray-800 rounded",
+                        )
+                    )
+
+                # Scenario D: thinking type
+                elif item_type == "thinking":
+                    thinking_text = item.get("thinking", "")
+                    components.append(
+                        Div(
+                            render_markdown_content(thinking_text),
+                            cls="mb-4 p-3 bg-gray-800 rounded",
+                        )
+                    )
+
+                # ... other scenarios (image, tool_use, tool_result) ...
+```
+
+**Why important**:
+- Renders full thinking text (not just first 2 lines) in detail panel
+- Uses same rendering pattern as text type for consistency
+- Placed in Content section after metrics
+- Uses render_markdown_content() for proper text formatting
+
+#### Previous Session Changes:
+
+**Session 3 Changes**:
 
 **1. ProjectAccordion Function - Homepage Timestamps and Sorting**
 
@@ -101,7 +282,7 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
                 A(
                     DivFullySpaced(
                         Span(session.session_id, cls=TextT.bold),
-                        Span(relative_time, cls="text-gray-500 font-normal"),  # Changed styling
+                        Span(relative_time, cls="text-gray-500 font-normal"),
                     ),
                     href=f"/viewer/{session.session_id}",
                     cls="hover:bg-gray-800 p-2 rounded block",
@@ -117,7 +298,7 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
         A(
             DivFullySpaced(
                 Span(project_name),
-                Span(project_time, cls="text-gray-500 font-normal"),  # Project timestamp
+                Span(project_time, cls="text-gray-500 font-normal"),
             ),
             cls="uk-accordion-title font-bold",
         ),
@@ -125,228 +306,23 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
     )
 ```
 
-**Why important**:
-- Displays project timestamp based on most recent session
-- Uses consistent gray styling for all timestamps
-- Enables users to quickly see project activity
-
 **2. Index Route - Project Sorting**
 
 Added sorting logic to display most recently active projects first:
 
 ```python
-@rt
-def index():
-    """Home page with project accordion"""
-    sessions = discover_sessions()
-
-    if not sessions:
-        return Layout(
-            Card(
-                P("No session files found in ~/.claude/sessions/", cls=TextT.muted),
-                cls="mt-8",
-            )
-        )
-
-    projects = group_sessions_by_project(sessions)
-
-    # Sort projects by most recent session (descending)
-    sorted_projects = sorted(
-        projects.items(),
-        key=lambda item: max(s.created_at for s in item[1]),
-        reverse=True
-    )
-
-    accordion_items = [
-        ProjectAccordion(project_name, project_sessions)
-        for project_name, project_sessions in sorted_projects
-    ]
-
-    return Layout(
-        Div(
-            H2("Projects & Sessions", cls="mb-4"),
-            Ul(
-                *accordion_items, cls="uk-accordion", data_uk_accordion="multiple: true"
-            ),
-            cls="mt-8",
-        )
-    )
+# Sort projects by most recent session (descending)
+sorted_projects = sorted(
+    projects.items(),
+    key=lambda item: max(s.created_at for s in item[1]),
+    reverse=True
+)
 ```
-
-**Why important**:
-- Sorts projects by most recent activity
-- Improves UX by showing active projects first
-- Uses max() to find most recent session in each project
 
 **3. Viewer Route - Unified Panel Layout**
 
 Consolidated trace tree and event details into single bordered container:
 
-```python
-@rt("/viewer/{session_id}")
-def viewer(session_id: str):
-    """Trace viewer page with tree and detail panel"""
-    # Find session file in project directories
-    sessions = discover_sessions()
-    session_file = None
-    project_name = None
-    for session in sessions:
-        if session.session_id == session_id:
-            session_file = session.file_path
-            project_name = session.project_name
-            break
-
-    if not session_file or not session_file.exists():
-        return Layout(
-            Card(
-                P(f"Session file not found: {session_id}", cls=TextT.muted), cls="mt-8"
-            )
-        )
-
-    trace_tree = parse_session_file(session_file)
-
-    tree_nodes = [TraceTreeNode(event, session_id, trace_tree) for event in trace_tree]
-
-    return Layout(
-        Div(
-            # Session header with project path
-            DivFullySpaced(
-                H4(f"Session: {session_id}", cls="uk-h4"),
-                Span(project_name, cls="text-gray-500 font-normal"),
-            ),
-            # Combined panel with single border - using CardContainer directly
-            CardContainer(
-                Div(
-                    # Left panel - Trace tree (30% width)
-                    Div(
-                        Div(
-                            *(
-                                tree_nodes
-                                if tree_nodes
-                                else [P("No trace events found", cls=TextT.muted)]
-                            ),
-                            cls="overflow-auto",
-                            style="max-height: 75vh;",
-                        ),
-                        cls="p-4",
-                        style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
-                    ),
-                    # Right panel - Detail view (70% width)
-                    Div(
-                        H3("Event Details", cls="mb-4 font-bold"),
-                        Div(
-                            P("Select an event to view details", cls=TextT.muted),
-                            id="detail-panel",
-                            cls="overflow-auto",
-                            style="max-height: 75vh",
-                        ),
-                        cls="p-4",
-                        style="width: 70%",
-                    ),
-                    style="display: flex;",
-                ),
-                cls="mt-4",
-            ),
-        ),
-        show_back_button=True,
-    )
-```
-
-**Why important**:
-- Uses CardContainer instead of Card to avoid automatic CardBody padding
-- Single border around both panels with dividing line using `var(--uk-border-default)`
-- Left panel has fixed `height: 75vh` to prevent bottom gap
-- Removed "Trace Tree" heading for cleaner layout
-- Added project path to session header
-- Session header uses H4 with uk-h4 class and DivFullySpaced for layout
-
-### summary.md
-
-**Purpose**: Development summary documenting all features, changes, and decisions made during the project.
-
-**Status**: Being updated with Session 3 changes (homepage timestamps, panel consolidation, session header improvements)
-
-## 4. Problem Solving
-
-### Problems Solved in Session 3:
-
-1. **Project Timestamp Display**:
-   - **Problem**: Needed to show when each project was last active
-   - **Solution**: Extract most recent session timestamp from sessions list using `max(sessions, key=lambda s: s.created_at)`
-   - **Implementation**: Added timestamp to both project accordion titles and individual session entries
-
-2. **Project Sorting**:
-   - **Problem**: Projects displayed in alphabetical order, not by activity
-   - **Solution**: Sort projects dict by max session timestamp in descending order
-   - **Code**: `sorted(projects.items(), key=lambda item: max(s.created_at for s in item[1]), reverse=True)`
-
-3. **Panel Border Consolidation**:
-   - **Problem**: Trace tree and event details had separate borders with gap between them
-   - **Solution**: Wrap both panels in single CardContainer instead of separate Card components
-   - **Why**: Card automatically wraps content in CardBody which adds padding, CardContainer is just the outer shell
-
-4. **Border Color Mismatch**:
-   - **Problem**: Dividing line color (rgb(55, 65, 81)) didn't match card border
-   - **Solution**: Use CSS variable `var(--uk-border-default)` for consistent theming
-   - **Research**: Used context7 MCP to understand MonsterUI Card component structure
-
-5. **Trace Tree Bottom Gap**:
-   - **Problem**: Left panel had visible gap at bottom, not flush like right panel
-   - **Root Cause**: Using `max-height` without fixed container height
-   - **Solution**: Set outer div to `height: 75vh` and inner scrollable to `max-height: 75vh`
-   - **Failed Attempts**:
-     - Tried `min-height` which caused overflow
-     - Tried removing `max-height` which caused layout issues
-     - Moving padding from outer to inner div didn't fix the gap
-
-6. **Session Header Layout**:
-   - **Problem**: Needed to display both session ID and project path in header
-   - **Solution**: Use DivFullySpaced with H4 for session ID and Span for project path
-   - **Styling**: H4 uses uk-h4 class, project path uses text-gray-500 with regular weight
-
-7. **Panel Height Visibility**:
-   - **Problem**: Original 70vh height too small for comfortable viewing
-   - **Solution**: Increased both panels to 75vh for better content visibility
-
-## 5. Previous Session Bug Fixes
-
-### MCP Tool Result Rendering Bug (Fixed in Session 2)
-
-**Problem**: When clicking on tool_result events for MCP tools (e.g., `mcp__puppeteer__puppeteer_navigate`), the Event Details panel would show an Internal Server Error instead of the correct event data.
-
-**Root Cause**: The `toolUseResult` field has different data types:
-- **Native tools**: dict/object (e.g., `{"shellId": "...", "command": "..."}`)
-- **MCP tools**: list/array (e.g., `[{"type": "text", "text": "..."}]`)
-
-**Solution**: Added type checking to handle both formats in DetailPanel function.
-
-### Base64 Image Rendering Feature (Added in Session 2)
-
-**Problem**: Base64-encoded images displayed as raw JSON data instead of actual images.
-
-**Solution**: Implemented image rendering in three locations:
-1. User/assistant message content arrays
-2. Tool result content arrays
-3. toolUseResult field for MCP tools
-
-## 6. Pending Tasks
-
-**None** - All requested features have been implemented.
-
-## 7. Current Work
-
-**Session Header and Project Path Display**
-
-The most recent work completed was updating the session viewer header:
-
-**Changes Made** (main.py lines 794-823):
-1. Modified viewer route to capture `project_name` from session lookup
-2. Replaced single H3 session title with DivFullySpaced layout:
-   - Left: H4 with `uk-h4` class showing session ID
-   - Right: Span with project path in gray (text-gray-500, font-normal)
-3. Panel height increased from 70vh to 75vh for better visibility
-
-**Code snippet**:
 ```python
 return Layout(
     Div(
@@ -354,68 +330,174 @@ return Layout(
             H4(f"Session: {session_id}", cls="uk-h4"),
             Span(project_name, cls="text-gray-500 font-normal"),
         ),
-        # Combined panel with single border...
         CardContainer(
-            # Left panel with height: 75vh
-            # Right panel with max-height: 75vh
-        )
+            Div(
+                # Left panel - Trace tree (30% width)
+                Div(
+                    Div(
+                        *tree_nodes,
+                        cls="overflow-auto",
+                        style="max-height: 75vh;",
+                    ),
+                    cls="p-4",
+                    style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
+                ),
+                # Right panel - Detail view (70% width)
+                Div(
+                    H3("Event Details", cls="mb-4 font-bold"),
+                    Div(
+                        P("Select an event to view details", cls=TextT.muted),
+                        id="detail-panel",
+                        cls="overflow-auto",
+                        style="max-height: 75vh",
+                    ),
+                    cls="p-4",
+                    style="width: 70%",
+                ),
+                style="display: flex;",
+            ),
+            cls="mt-4",
+        ),
     ),
     show_back_button=True,
 )
 ```
 
-**Previous work in this session**:
-1. ✅ Added timestamps to homepage projects (rightmost side)
-2. ✅ Sorted projects by most recent session
-3. ✅ Updated timestamp styling to text-gray-500 with regular font weight
-4. ✅ Consolidated trace tree and event details panels into single border
-5. ✅ Fixed dividing line color to match card border
-6. ✅ Removed "Trace Tree" heading
-7. ✅ Fixed bottom gap in trace tree panel
-8. ✅ Updated session header with project path
+### summary.md
 
-All Session 3 UI improvements are complete and functional.
+**Purpose**: Development summary documenting all features, changes, and decisions made during the project.
 
-## 8. Optional Next Step
+**Status**: Updated with Session 4 changes (thinking event support)
 
-**Ready for Testing and Potential Commit**
+## 4. Problem Solving
 
-The latest changes are complete and ready for testing:
-1. Refresh browser at http://localhost:5001
-2. Test homepage:
-   - Verify projects show "X time ago" on right side
-   - Verify projects sorted by most recent activity
-   - Verify timestamps use gray color with regular weight
-3. Click into a session:
-   - Verify unified panel border (no gap between panels)
-   - Verify dividing line matches border color
-   - Verify trace tree panel flushes to bottom (no gap)
-   - Verify session header shows project path on right
-4. Test panel scrolling behavior with 75vh height
+### Problems Solved in Session 4:
 
-**User's most recent request (verbatim)**:
-> "Okay, and for the session ID at the top right, use uk-h4 instead. Then, on its rightmost side, include the project file path. for project file path, use just the regular weight and the standard font size with text-gray-500 as the font color."
+1. **Thinking Event Detection**:
+   - **Problem**: Need to identify events containing thinking content from LLM
+   - **Solution**: Added `is_thinking()` method to check for "thinking" type in message content array
+   - **Implementation**: Follows same pattern as `is_tool_call()` and `is_tool_result()`
 
-This has been completed. The session header now shows:
-- Left: Session ID with H4 (uk-h4 class)
-- Right: Project path with text-gray-500 and font-normal
+2. **Thinking Text Display in Trace Tree**:
+   - **Problem**: Need to show first 2 lines of thinking text in trace tree rows
+   - **Solution**: Updated `get_display_text()` to extract thinking text and split by newlines
+   - **Code**: `lines = thinking_text.split('\n')` then `return '\n'.join(lines[:2])`
 
-Once tested, consider committing with:
-```
-feat(ui): add timestamps to projects and improve viewer layout
+3. **Thinking Event Labeling**:
+   - **Problem**: Need to show "thinking" label in blue color in trace tree
+   - **Solution**: Added thinking check BEFORE tool call checks in TraceTreeNode
+   - **Why order matters**: Event priority determines which label is shown
 
-- Add "X time ago" timestamps to projects and sessions
-- Sort projects by most recent session activity
-- Consolidate trace tree and event details into single border
-- Remove trace tree heading for cleaner layout
-- Fix panel height to flush bottom (75vh)
-- Add project path to session header
-- Use consistent gray styling for secondary text
-```
+4. **Thinking Content Rendering**:
+   - **Problem**: Need to display full thinking text in event details panel
+   - **Solution**: Added "thinking" type case in DetailPanel's content type switch
+   - **Pattern**: Uses same rendering as text type for consistency
 
-The Claude Code Trace Viewer now has:
+### Problems Solved in Session 3:
+
+1. **Project Timestamp Display**:
+   - **Problem**: Needed to show when each project was last active
+   - **Solution**: Extract most recent session timestamp using `max(sessions, key=lambda s: s.created_at)`
+
+2. **Project Sorting**:
+   - **Problem**: Projects displayed in alphabetical order, not by activity
+   - **Solution**: Sort projects dict by max session timestamp in descending order
+
+3. **Panel Border Consolidation**:
+   - **Problem**: Trace tree and event details had separate borders with gap
+   - **Solution**: Wrap both panels in single CardContainer instead of separate Card components
+
+4. **Border Color Mismatch**:
+   - **Problem**: Dividing line color didn't match card border
+   - **Solution**: Use CSS variable `var(--uk-border-default)` for consistent theming
+
+5. **Trace Tree Bottom Gap**:
+   - **Problem**: Left panel had visible gap at bottom
+   - **Root Cause**: Using `max-height` without fixed container height
+   - **Solution**: Set outer div to `height: 75vh` and inner scrollable to `max-height: 75vh`
+
+### Previous Session Bug Fixes:
+
+**MCP Tool Result Rendering Bug (Session 2)**:
+- **Problem**: MCP tools caused Internal Server Error in Event Details panel
+- **Root Cause**: `toolUseResult` has different types (dict for native, list for MCP)
+- **Solution**: Added type checking to handle both formats
+
+**Base64 Image Rendering (Session 2)**:
+- **Problem**: Base64 images displayed as raw JSON
+- **Solution**: Implemented image rendering in three locations (user messages, tool results, toolUseResult)
+
+## 5. Pending Tasks
+
+**None** - All requested features have been implemented.
+
+## 6. Current Work
+
+**Thinking Event Support Implementation**
+
+The most recent work completed was adding support for thinking events in the trace viewer:
+
+**Changes Made** (main.py):
+
+1. **Added thinking detection methods** (lines 174-192):
+   - `is_thinking()`: Checks if event contains thinking type in content array
+   - `get_thinking_text()`: Extracts thinking text from event
+
+2. **Updated get_display_text()** (lines 216-220):
+   - Added thinking type handling
+   - Extracts first 2 lines using `split('\n')[:2]`
+   - Returns joined lines for trace tree display
+
+3. **Modified TraceTreeNode()** (lines 419-422):
+   - Added thinking event check BEFORE tool call checks
+   - Uses blue color: `text-xs text-blue-500`
+   - Displays "thinking" label
+
+4. **Enhanced DetailPanel()** (lines 526-534):
+   - Added thinking type case in content type switch
+   - Renders full thinking text (not truncated)
+   - Uses same pattern as text type rendering
+
+**Implementation follows user's screenshot requirements**:
+- ✅ Blue highlighted area: Thinking events show "thinking" label in blue with first 2 lines
+- ✅ Yellow highlighted area: Event details show full thinking text in Content section
+
+**Task progression**:
+1. ✅ Add thinking event detection to TraceEvent class
+2. ✅ Display thinking text (first 2 lines) in trace tree rows
+3. ✅ Add thinking content rendering to DetailPanel
+
+All 3 tasks completed successfully.
+
+## 7. Optional Next Step
+
+**Testing Thinking Event Display**
+
+The thinking event feature is complete and ready for testing:
+
+1. Run the trace viewer: `uv run python main.py`
+2. Open a session that contains thinking events
+3. Verify in trace tree:
+   - Events with thinking content show "thinking" label in blue
+   - Display text shows first 2 lines of thinking text
+   - Text truncates properly with 2-line clamp
+4. Click on a thinking event
+5. Verify in event details:
+   - Full thinking text displays in Content section
+   - Text formatting matches other content types
+   - Metrics section appears if usage data exists
+
+**User's most recent request (verbatim from screenshot annotation)**:
+> "Highlighted in blue from img: So for this one, under the trace tree for the thinking trace (which is under the event data), look at the messages object under content. If its type is thinking, then that trace row's eyebrow should be thinking and the color should be blue. For the text, just take the first two lines from the 'message' > 'content' > 'thinking' value."
+
+> "Highlighted in yellow from img: Then for the event details, under the content section, to display the text from 'message' > 'Content' > 'Thinking' text value instead."
+
+Both requirements have been implemented.
+
+The Claude Code Trace Viewer now supports:
 - ✅ Comprehensive event details with scenario-based rendering
 - ✅ Tool call/result identification and labeling
+- ✅ Thinking event detection and display
 - ✅ Keyboard navigation and auto-selection
 - ✅ Clean, unified panel layout with single border
 - ✅ Project/session timestamps with activity sorting
