@@ -484,6 +484,27 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                         )
                     )
 
+                # Scenario A2: image type (in user messages)
+                elif item_type == "image":
+                    source = item.get("source", {})
+                    if isinstance(source, dict):
+                        data = source.get("data", "")
+                        media_type = source.get("media_type", "image/png")
+                        source_type = source.get("type", "base64")
+
+                        if data and source_type == "base64":
+                            components.append(
+                                Div(
+                                    Img(
+                                        src=f"data:{media_type};base64,{data}",
+                                        alt="User uploaded image",
+                                        cls="max-w-full h-auto rounded",
+                                        style="max-height: 600px;",
+                                    ),
+                                    cls="mb-4 p-3 bg-gray-800 rounded",
+                                )
+                            )
+
                 # Scenario B: tool_use type
                 elif item_type == "tool_use":
                     components.append(
@@ -562,18 +583,40 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                             )
                         elif isinstance(tool_content, list):
                             for content_item in tool_content:
-                                if (
-                                    isinstance(content_item, dict)
-                                    and content_item.get("type") == "text"
-                                ):
-                                    tool_result_components.append(
-                                        Div(
-                                            render_markdown_content(
-                                                content_item.get("text", "")
-                                            ),
-                                            cls="mt-2",
+                                if isinstance(content_item, dict):
+                                    content_type = content_item.get("type")
+
+                                    if content_type == "text":
+                                        tool_result_components.append(
+                                            Div(
+                                                render_markdown_content(
+                                                    content_item.get("text", "")
+                                                ),
+                                                cls="mt-2",
+                                            )
                                         )
-                                    )
+                                    elif content_type == "image":
+                                        # Render base64 image in tool_result content
+                                        source = content_item.get("source", {})
+                                        if isinstance(source, dict):
+                                            data = source.get("data", "")
+                                            media_type = source.get(
+                                                "media_type", "image/png"
+                                            )
+                                            source_type = source.get("type", "base64")
+
+                                            if data and source_type == "base64":
+                                                tool_result_components.append(
+                                                    Div(
+                                                        Img(
+                                                            src=f"data:{media_type};base64,{data}",
+                                                            alt="Content image",
+                                                            cls="max-w-full h-auto rounded",
+                                                            style="max-height: 600px;",
+                                                        ),
+                                                        cls="mt-2",
+                                                    )
+                                                )
 
                     # Wrap all tool result components
                     components.append(
@@ -619,18 +662,40 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
                         elif isinstance(tool_use_result, list):
                             # MCP tools return toolUseResult as a list of content items
                             for content_item in tool_use_result:
-                                if (
-                                    isinstance(content_item, dict)
-                                    and content_item.get("type") == "text"
-                                ):
-                                    components.append(
-                                        Div(
-                                            render_markdown_content(
-                                                content_item.get("text", "")
-                                            ),
-                                            cls="mb-4 p-3 bg-gray-800 rounded",
+                                if isinstance(content_item, dict):
+                                    item_type = content_item.get("type")
+
+                                    if item_type == "text":
+                                        components.append(
+                                            Div(
+                                                render_markdown_content(
+                                                    content_item.get("text", "")
+                                                ),
+                                                cls="mb-4 p-3 bg-gray-800 rounded",
+                                            )
                                         )
-                                    )
+                                    elif item_type == "image":
+                                        # Render base64 image
+                                        source = content_item.get("source", {})
+                                        if isinstance(source, dict):
+                                            data = source.get("data", "")
+                                            media_type = source.get(
+                                                "media_type", "image/png"
+                                            )
+                                            source_type = source.get("type", "base64")
+
+                                            if data and source_type == "base64":
+                                                components.append(
+                                                    Div(
+                                                        Img(
+                                                            src=f"data:{media_type};base64,{data}",
+                                                            alt="Tool result image",
+                                                            cls="max-w-full h-auto rounded",
+                                                            style="max-height: 600px;",
+                                                        ),
+                                                        cls="mb-4 p-3 bg-gray-800 rounded",
+                                                    )
+                                                )
 
         elif isinstance(content, str):
             # Simple text content
