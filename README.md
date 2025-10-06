@@ -2,6 +2,8 @@
 
 A web-based viewer for Claude Code session traces, built with FastHTML and MonsterUI.
 
+![Claude Code Trace Viewer](viewer.png)
+
 ## Features
 
 - 📁 **Auto-detects your Claude Code sessions** from `~/.claude/projects/`
@@ -33,9 +35,13 @@ cd cc-trace-viewer
 uv sync
 ```
 
-**With pip:**
+**Alternative - Install from pyproject.toml:**
 ```bash
-pip install -r requirements.txt
+# Using pip
+pip install -e .
+
+# Or using uv
+uv pip install -e .
 ```
 
 ## Usage

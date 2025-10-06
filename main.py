@@ -797,9 +797,11 @@ def viewer(session_id: str):
     # Find session file in project directories
     sessions = discover_sessions()
     session_file = None
+    project_name = None
     for session in sessions:
         if session.session_id == session_id:
             session_file = session.file_path
+            project_name = session.project_name
             break
 
     if not session_file or not session_file.exists():
@@ -815,12 +817,15 @@ def viewer(session_id: str):
 
     return Layout(
         Div(
-            H3(f"Session: {session_id}", cls="mb-4"),
-            Div(
-                # Left panel - Trace tree (30% width)
+            DivFullySpaced(
+                H4(f"Session: {session_id}", cls="uk-h4"),
+                Span(project_name, cls="text-gray-500 font-normal"),
+            ),
+            # Combined panel with single border - using CardContainer directly
+            CardContainer(
                 Div(
-                    Card(
-                        H3("Trace Tree", cls="mb-4 font-bold"),
+                    # Left panel - Trace tree (30% width)
+                    Div(
                         Div(
                             *(
                                 tree_nodes
@@ -828,28 +833,26 @@ def viewer(session_id: str):
                                 else [P("No trace events found", cls=TextT.muted)]
                             ),
                             cls="overflow-auto",
-                            style="max-height: 70vh",
+                            style="max-height: 75vh;",
                         ),
                         cls="p-4",
+                        style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
                     ),
-                    style="width: 30%",
-                ),
-                # Right panel - Detail view (70% width)
-                Div(
-                    Card(
+                    # Right panel - Detail view (70% width)
+                    Div(
                         H3("Event Details", cls="mb-4 font-bold"),
                         Div(
                             P("Select an event to view details", cls=TextT.muted),
                             id="detail-panel",
                             cls="overflow-auto",
-                            style="max-height: 70vh",
+                            style="max-height: 75vh",
                         ),
-                        cls="pt-4 pr-4 pb-4",
+                        cls="p-4",
+                        style="width: 70%",
                     ),
-                    style="width: 70%",
+                    style="display: flex;",
                 ),
-                cls="gap-4 mt-4",
-                style="display: flex; gap: 1rem",
+                cls="mt-4",
             ),
         ),
         show_back_button=True,

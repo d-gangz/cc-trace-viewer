@@ -2,9 +2,9 @@
 
 ## 1. Primary Request and Intent
 
-The user requested comprehensive UI improvements and enhancements to the Claude Code trace viewer application:
+The user requested comprehensive UI improvements and enhancements to the Claude Code trace viewer application across multiple sessions:
 
-### Initial Requirements:
+### Session 1 - Initial Requirements:
 - Display all sessions from `~/.claude/projects/` directory
 - Show sessions ordered by date/time (most recent first)
 - Display entire trace/conversation when clicking a session
@@ -12,7 +12,7 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 - Accurate timezone handling and conversion
 - Filter out incomplete/summary-only sessions
 
-### UI Enhancement Requests (Completed in Current Session):
+### Session 2 - UI Enhancement Requests:
 1. **Trace Tree UI Improvements**:
    - Remove circle icons from trace rows
    - Limit text to max 2 lines with proper truncation
@@ -30,11 +30,9 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 
 3. **Event Details Redesign**:
    - Remove Event/Timestamp/ID sections (keep Event Data at bottom)
-   - Add structured Content section with scenario-based rendering:
-     - **Scenario A (text)**: Display markdown-formatted text with word wrap, multiple text items separately, show Metrics if usage exists
-     - **Scenario B (tool_use)**: Display tool ID, name, and input parameters with Metrics
-     - **Scenario C (tool_result)**: Display tool ID, tool name, content text, and Tool Result section with toolUseResult data
-   - Add Metrics section displaying usage data from message.usage object
+   - Add structured Content section with scenario-based rendering
+   - Add Metrics section displaying usage data
+   - Add base64 image rendering support
 
 4. **Navigation & Layout**:
    - Auto-select first trace event on page load
@@ -42,424 +40,294 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
    - Make hover colors consistent across home and viewer pages
    - Remove border divider below main title
 
+### Session 3 - Homepage and Layout Improvements:
+1. **Homepage Project Timestamps**:
+   - Add "X time ago" timestamp to each project (rightmost side)
+   - Sort projects by most recent session (descending order)
+   - Use text-gray-500 with regular font weight for timestamps
+
+2. **Panel Consolidation**:
+   - Combine trace tree and event details into single bordered container
+   - Remove gap between panels, use single dividing line
+   - Match dividing line color to card border color
+   - Remove "Trace Tree" heading from left panel
+   - Fix bottom gap in trace tree panel to flush with bottom
+
+3. **Session Header Enhancement**:
+   - Use H4 with uk-h4 class for session ID
+   - Add project path on rightmost side with text-gray-500
+   - Use DivFullySpaced for proper spacing
+
+4. **Panel Height Adjustment**:
+   - Increase panel height from 70vh to 75vh for better visibility
+
 ## 2. Key Technical Concepts
 
 - **FastHTML**: Modern Python web framework for building web applications
-- **MonsterUI**: UI component library for FastHTML
+- **MonsterUI**: UI component library for FastHTML (Card, CardContainer, CardBody components)
 - **HTMX**: Dynamic content loading without page refreshes
 - **Timezone-aware datetime handling**: Converting UTC timestamps to local time
 - **JSONL format**: Line-delimited JSON for session traces
 - **CSS line-clamp**: Text truncation with `-webkit-line-clamp: 2`
-- **Flexbox layout**: For 30/70 width distribution
+- **Flexbox layout**: For 30/70 width distribution and panel alignment
 - **JavaScript event listeners**: Keyboard navigation and auto-selection
 - **Tool ID correlation**: Matching tool_result events to tool_use events via tool_use_id
 - **Scenario-based rendering**: Different UI rendering based on content type
 - **Word wrapping**: `whitespace-pre-wrap` and `break-words` for proper text display
+- **CSS Variables**: Using `var(--uk-border-default)` for consistent theming
+- **Height vs max-height**: Understanding difference for panel sizing
+- **MonsterUI Card Architecture**: Card wraps content in CardBody which adds padding
 
 ## 3. Files and Code Sections
 
-### main.py (762 lines)
+### main.py
 
 **Purpose**: Main application file containing the FastHTML web server and all trace viewer logic.
 
-**Status**: All UI enhancements completed and committed in commit `4a9b1a5`
+#### Recent Changes (Session 3):
 
-#### Key Changes Made:
+**1. ProjectAccordion Function - Homepage Timestamps and Sorting**
 
-1. **CSS for Text Truncation**:
+Added timestamp display to project accordion titles and enabled project sorting:
+
 ```python
-custom_css = Style(
-    """
-    .trace-event {
-        cursor: pointer;
-        padding: 0.5rem;
-        transition: all 0.2s ease;
-        border-radius: 0.375rem;
-        border-left: 3px solid transparent;
-        line-height: 1.5;
-        word-wrap: break-word;
-    }
-
-    .trace-event > span:last-child {
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-    }
-
-    .trace-event:hover {
-        background-color: rgb(31, 41, 55);
-    }
-
-    .trace-event.selected {
-        background-color: rgb(17, 24, 39);
-        border-left-color: rgb(59, 130, 246);
-    }
-"""
-)
-```
-**Why important**: Applied line-clamp to inner span to prevent text cutoff issues, ensuring proper 2-line truncation without affecting padding.
-
-2. **Auto-Selection and Keyboard Navigation**:
-```python
-selection_script = Script(
-    """
-    document.addEventListener('DOMContentLoaded', function() {
-        // Auto-select first trace event on page load
-        setTimeout(function() {
-            var events = document.querySelectorAll('.trace-event');
-            if (events.length > 0) {
-                htmx.trigger(events[0], 'click');
-            }
-        }, 100);
-
-        // Handle selection on HTMX request
-        document.body.addEventListener('htmx:beforeRequest', function(evt) {
-            if (evt.detail.elt.classList.contains('trace-event')) {
-                document.querySelectorAll('.trace-event').forEach(function(item) {
-                    item.classList.remove('selected');
-                });
-                evt.detail.elt.classList.add('selected');
-            }
-        });
-
-        // Handle keyboard navigation
-        document.addEventListener('keydown', function(evt) {
-            if (evt.key !== 'ArrowUp' && evt.key !== 'ArrowDown') {
-                return;
-            }
-
-            evt.preventDefault();
-
-            var events = Array.from(document.querySelectorAll('.trace-event'));
-            if (events.length === 0) return;
-
-            var selected = document.querySelector('.trace-event.selected');
-            var currentIndex = selected ? events.indexOf(selected) : -1;
-            var newIndex;
-
-            if (evt.key === 'ArrowDown') {
-                newIndex = currentIndex + 1;
-                if (newIndex >= events.length) newIndex = 0;
-            } else {
-                newIndex = currentIndex - 1;
-                if (newIndex < 0) newIndex = events.length - 1;
-            }
-
-            // Trigger HTMX on new element
-            htmx.trigger(events[newIndex], 'click');
-
-            // Scroll into view
-            events[newIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        });
-    });
-"""
-)
-```
-**Why important**: Implements auto-selection of first event on page load and keyboard navigation for better UX.
-
-3. **TraceEvent with Tool Detection Methods**:
-```python
-@dataclass
-class TraceEvent:
-    """Single trace event from JSONL file"""
-
-    id: str
-    event_type: str
-    timestamp: str
-    data: Dict[str, Any]
-    parent_id: Optional[str] = None
-    children: List["TraceEvent"] = field(default_factory=list)
-    level: int = 0
-
-    def is_tool_call(self) -> bool:
-        """Check if this event is a tool call"""
-        if "message" in self.data:
-            msg = self.data["message"]
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "tool_use":
-                        return True
-        return False
-
-    def is_tool_result(self) -> bool:
-        """Check if this event is a tool result"""
-        if "message" in self.data:
-            msg = self.data["message"]
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        return True
-        return False
-
-    def get_tool_use_id(self) -> Optional[str]:
-        """Get tool_use_id from tool_result"""
-        if "message" in self.data:
-            msg = self.data["message"]
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "tool_result":
-                        return item.get("tool_use_id")
-        return None
-
-    def get_tool_name(self) -> str:
-        """Get tool name if this is a tool call"""
-        if "message" in self.data:
-            msg = self.data["message"]
-            if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
-                    if isinstance(item, dict) and item.get("type") == "tool_use":
-                        return item.get("name", "unknown")
-        return ""
-```
-**Why important**: Provides methods to detect and extract tool-related information for proper labeling and display.
-
-4. **TraceTreeNode with Tool Labeling**:
-```python
-def TraceTreeNode(event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None):
-    """Flat timeline event node"""
-    node_id = f"node-{event.id}"
-
-    display_text = event.get_display_text()
-
-    # Check if this is a tool call
-    if event.is_tool_call():
-        label = "tool call"
-        label_color = "text-xs text-yellow-500"
-    elif event.is_tool_result():
-        label = "tool result"
-        label_color = "text-xs text-green-500"
-        # Find the corresponding tool_use event to get the tool name
-        tool_use_id = event.get_tool_use_id()
-        if tool_use_id and all_events:
-            for e in all_events:
-                if "message" in e.data:
-                    msg = e.data["message"]
-                    if isinstance(msg.get("content"), list):
-                        for item in msg["content"]:
-                            if isinstance(item, dict) and item.get("type") == "tool_use":
-                                if item.get("id") == tool_use_id:
-                                    display_text = item.get("name", "unknown")
-                                    break
-    else:
-        label = event.event_type
-        label_color = "text-xs text-gray-500"
-
-    return Div(
-        Span(label, cls=label_color),
-        Span(display_text),
-        cls="trace-event",
-        hx_get=f"/event/{session_id}/{event.id}",
-        hx_target="#detail-panel",
-        id=node_id,
-    )
-```
-**Why important**: Implements colored labels for tool calls (yellow) and tool results (green), with tool name lookup for results.
-
-5. **DetailPanel with Scenario-Based Rendering**:
-Complete redesign of event details panel with three distinct rendering scenarios for different content types, plus Metrics and Event Data sections. See previous summary section for full code.
-
-6. **Layout with Back Button**:
-```python
-def Layout(content, show_back_button=False):
-    """Main layout wrapper"""
-    if show_back_button:
-        header = Div(
-            A("Back", href="/", cls="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded"),
-            H1("Claude Code Trace Viewer", cls="my-8 text-center flex-grow"),
-            Div(style="width: 80px"),  # Spacer to balance the layout
-            cls="flex items-center pb-4",
+def ProjectAccordion(project_name: str, sessions: List[Session]):
+    """Accordion item for a project with its sessions"""
+    session_items = []
+    for session in sessions:
+        relative_time = get_relative_time(session.created_at)
+        session_items.append(
+            Li(
+                A(
+                    DivFullySpaced(
+                        Span(session.session_id, cls=TextT.bold),
+                        Span(relative_time, cls="text-gray-500 font-normal"),  # Changed styling
+                    ),
+                    href=f"/viewer/{session.session_id}",
+                    cls="hover:bg-gray-800 p-2 rounded block",
+                )
+            )
         )
-    else:
-        header = DivCentered(H1("Claude Code Trace Viewer", cls="my-8"), cls="pb-4")
 
-    return Container(
-        header,
-        content,
-        cls="min-h-screen",
+    # Get most recent session timestamp for this project
+    most_recent = max(sessions, key=lambda s: s.created_at)
+    project_time = get_relative_time(most_recent.created_at)
+
+    return Li(
+        A(
+            DivFullySpaced(
+                Span(project_name),
+                Span(project_time, cls="text-gray-500 font-normal"),  # Project timestamp
+            ),
+            cls="uk-accordion-title font-bold",
+        ),
+        Div(Ul(*session_items, cls="space-y-1 mt-2"), cls="uk-accordion-content"),
     )
 ```
-**Why important**: Modified Layout function to conditionally show Back button in header, positioned on same row as title. Removed `border-b` class to eliminate divider line.
+
+**Why important**:
+- Displays project timestamp based on most recent session
+- Uses consistent gray styling for all timestamps
+- Enables users to quickly see project activity
+
+**2. Index Route - Project Sorting**
+
+Added sorting logic to display most recently active projects first:
+
+```python
+@rt
+def index():
+    """Home page with project accordion"""
+    sessions = discover_sessions()
+
+    if not sessions:
+        return Layout(
+            Card(
+                P("No session files found in ~/.claude/sessions/", cls=TextT.muted),
+                cls="mt-8",
+            )
+        )
+
+    projects = group_sessions_by_project(sessions)
+
+    # Sort projects by most recent session (descending)
+    sorted_projects = sorted(
+        projects.items(),
+        key=lambda item: max(s.created_at for s in item[1]),
+        reverse=True
+    )
+
+    accordion_items = [
+        ProjectAccordion(project_name, project_sessions)
+        for project_name, project_sessions in sorted_projects
+    ]
+
+    return Layout(
+        Div(
+            H2("Projects & Sessions", cls="mb-4"),
+            Ul(
+                *accordion_items, cls="uk-accordion", data_uk_accordion="multiple: true"
+            ),
+            cls="mt-8",
+        )
+    )
+```
+
+**Why important**:
+- Sorts projects by most recent activity
+- Improves UX by showing active projects first
+- Uses max() to find most recent session in each project
+
+**3. Viewer Route - Unified Panel Layout**
+
+Consolidated trace tree and event details into single bordered container:
+
+```python
+@rt("/viewer/{session_id}")
+def viewer(session_id: str):
+    """Trace viewer page with tree and detail panel"""
+    # Find session file in project directories
+    sessions = discover_sessions()
+    session_file = None
+    project_name = None
+    for session in sessions:
+        if session.session_id == session_id:
+            session_file = session.file_path
+            project_name = session.project_name
+            break
+
+    if not session_file or not session_file.exists():
+        return Layout(
+            Card(
+                P(f"Session file not found: {session_id}", cls=TextT.muted), cls="mt-8"
+            )
+        )
+
+    trace_tree = parse_session_file(session_file)
+
+    tree_nodes = [TraceTreeNode(event, session_id, trace_tree) for event in trace_tree]
+
+    return Layout(
+        Div(
+            # Session header with project path
+            DivFullySpaced(
+                H4(f"Session: {session_id}", cls="uk-h4"),
+                Span(project_name, cls="text-gray-500 font-normal"),
+            ),
+            # Combined panel with single border - using CardContainer directly
+            CardContainer(
+                Div(
+                    # Left panel - Trace tree (30% width)
+                    Div(
+                        Div(
+                            *(
+                                tree_nodes
+                                if tree_nodes
+                                else [P("No trace events found", cls=TextT.muted)]
+                            ),
+                            cls="overflow-auto",
+                            style="max-height: 75vh;",
+                        ),
+                        cls="p-4",
+                        style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
+                    ),
+                    # Right panel - Detail view (70% width)
+                    Div(
+                        H3("Event Details", cls="mb-4 font-bold"),
+                        Div(
+                            P("Select an event to view details", cls=TextT.muted),
+                            id="detail-panel",
+                            cls="overflow-auto",
+                            style="max-height: 75vh",
+                        ),
+                        cls="p-4",
+                        style="width: 70%",
+                    ),
+                    style="display: flex;",
+                ),
+                cls="mt-4",
+            ),
+        ),
+        show_back_button=True,
+    )
+```
+
+**Why important**:
+- Uses CardContainer instead of Card to avoid automatic CardBody padding
+- Single border around both panels with dividing line using `var(--uk-border-default)`
+- Left panel has fixed `height: 75vh` to prevent bottom gap
+- Removed "Trace Tree" heading for cleaner layout
+- Added project path to session header
+- Session header uses H4 with uk-h4 class and DivFullySpaced for layout
 
 ### summary.md
 
 **Purpose**: Development summary documenting all features, changes, and decisions made during the project.
 
-**Status**: Updated with comprehensive documentation of this session's UI enhancements in commit `4a9b1a5`
+**Status**: Being updated with Session 3 changes (homepage timestamps, panel consolidation, session header improvements)
 
 ## 4. Problem Solving
 
-### Problems Solved in This Session:
+### Problems Solved in Session 3:
 
-1. **Text Truncation Cutoff Issues**:
-   - **Problem**: Second line was being cut off when using max-height on the entire .trace-event div
-   - **Solution**: Applied line-clamp CSS to the inner span (`.trace-event > span:last-child`) instead of the parent div, avoiding padding interference
+1. **Project Timestamp Display**:
+   - **Problem**: Needed to show when each project was last active
+   - **Solution**: Extract most recent session timestamp from sessions list using `max(sessions, key=lambda s: s.created_at)`
+   - **Implementation**: Added timestamp to both project accordion titles and individual session entries
 
-2. **Left Margin/Padding Issues**:
-   - **Problem**: Text had unwanted left spacing in trace tree rows
-   - **Solution**: Removed `ml-2` class from display text span and removed space character before text
+2. **Project Sorting**:
+   - **Problem**: Projects displayed in alphabetical order, not by activity
+   - **Solution**: Sort projects dict by max session timestamp in descending order
+   - **Code**: `sorted(projects.items(), key=lambda item: max(s.created_at for s in item[1]), reverse=True)`
 
-3. **Event Details Left Padding**:
-   - **Problem**: Content not flush with Event Details title
-   - **Solution**: Changed Card padding from `cls="p-4"` to `cls="pt-4 pr-4 pb-4"` (no left padding), and removed `cls="p-4"` from DetailPanel wrapper
+3. **Panel Border Consolidation**:
+   - **Problem**: Trace tree and event details had separate borders with gap between them
+   - **Solution**: Wrap both panels in single CardContainer instead of separate Card components
+   - **Why**: Card automatically wraps content in CardBody which adds padding, CardContainer is just the outer shell
 
-4. **Tool Name Lookup for Tool Results**:
-   - **Problem**: Tool result events needed to display tool name but only had tool_use_id
-   - **Solution**: Passed all_events to both TraceTreeNode and DetailPanel, then searched through all events to find matching tool_use event with same ID
+4. **Border Color Mismatch**:
+   - **Problem**: Dividing line color (rgb(55, 65, 81)) didn't match card border
+   - **Solution**: Use CSS variable `var(--uk-border-default)` for consistent theming
+   - **Research**: Used context7 MCP to understand MonsterUI Card component structure
 
-5. **Usage Metrics Not Displaying**:
-   - **Problem**: Usage data was being read from wrong location (event.data instead of message object)
-   - **Solution**: Changed from `event.data.get("usage")` to `msg.get("usage")` to read from message object
+5. **Trace Tree Bottom Gap**:
+   - **Problem**: Left panel had visible gap at bottom, not flush like right panel
+   - **Root Cause**: Using `max-height` without fixed container height
+   - **Solution**: Set outer div to `height: 75vh` and inner scrollable to `max-height: 75vh`
+   - **Failed Attempts**:
+     - Tried `min-height` which caused overflow
+     - Tried removing `max-height` which caused layout issues
+     - Moving padding from outer to inner div didn't fix the gap
 
-## 5. Recent Bug Fixes
+6. **Session Header Layout**:
+   - **Problem**: Needed to display both session ID and project path in header
+   - **Solution**: Use DivFullySpaced with H4 for session ID and Span for project path
+   - **Styling**: H4 uses uk-h4 class, project path uses text-gray-500 with regular weight
 
-### MCP Tool Result Rendering Bug (Fixed)
+7. **Panel Height Visibility**:
+   - **Problem**: Original 70vh height too small for comfortable viewing
+   - **Solution**: Increased both panels to 75vh for better content visibility
 
-**Problem**: When clicking on tool_result events for MCP tools (e.g., `mcp__puppeteer__puppeteer_navigate`), the Event Details panel would show an Internal Server Error instead of the correct event data. This only affected MCP tools; native Claude Code tools (like Bash, BashOutput, etc.) worked correctly.
+## 5. Previous Session Bug Fixes
 
-**Root Cause**: The `toolUseResult` field has different data types for native vs MCP tools:
-- **Native tools**: `toolUseResult` is a dict/object (e.g., `{"shellId": "...", "command": "...", "status": "..."}`)
-- **MCP tools**: `toolUseResult` is a list/array (e.g., `[{"type": "text", "text": "Navigated to..."}]`)
+### MCP Tool Result Rendering Bug (Fixed in Session 2)
 
-The code was calling `.items()` on `toolUseResult` assuming it was always a dict, which caused a crash when it was actually a list for MCP tools.
+**Problem**: When clicking on tool_result events for MCP tools (e.g., `mcp__puppeteer__puppeteer_navigate`), the Event Details panel would show an Internal Server Error instead of the correct event data.
 
-**Solution**: Added type checking in the DetailPanel function to handle both formats:
-```python
-# Add Tool Result section
-tool_use_result = event.data.get("toolUseResult")
-if tool_use_result:
-    components.append(H4("Tool Result", cls="mb-2 font-bold mt-4"))
-    # Handle both dict (native tools) and list (MCP tools) formats
-    if isinstance(tool_use_result, dict):
-        # Original dict rendering code...
-    elif isinstance(tool_use_result, list):
-        # MCP tools return toolUseResult as a list of content items
-        for content_item in tool_use_result:
-            if isinstance(content_item, dict) and content_item.get("type") == "text":
-                components.append(
-                    Div(
-                        render_markdown_content(content_item.get("text", "")),
-                        cls="mb-4 p-3 bg-gray-800 rounded"
-                    )
-                )
-```
+**Root Cause**: The `toolUseResult` field has different data types:
+- **Native tools**: dict/object (e.g., `{"shellId": "...", "command": "..."}`)
+- **MCP tools**: list/array (e.g., `[{"type": "text", "text": "..."}]`)
 
-**Impact**: MCP tool_result events now display correctly without errors, showing the proper event data and tool result content.
+**Solution**: Added type checking to handle both formats in DetailPanel function.
 
-### Base64 Image Rendering Feature (Added)
+### Base64 Image Rendering Feature (Added in Session 2)
 
-**Problem**: Base64-encoded images in trace events were displaying as raw JSON data instead of actual images. This affected:
-- User messages with attached screenshots (e.g., `<ide_opened_file>` notifications)
-- MCP tool results containing images (e.g., Puppeteer screenshots)
-- Tool result content with embedded images
+**Problem**: Base64-encoded images displayed as raw JSON data instead of actual images.
 
-**User Request**: "Do you think it's possible to render images if the data is a Base64 string? would it be too heavy since i am running it locally?"
-
-**Solution**: Implemented image rendering in three distinct locations within the DetailPanel function:
-
-**Location 1: User/Assistant Message Content (Scenario A2)**
-- Handles images in message content arrays: `message.content = [{"type": "text"}, {"type": "image"}]`
-- Example: User messages with attached screenshots
-```python
-# Scenario A2: image type (in user messages)
-elif item_type == "image":
-    source = item.get("source", {})
-    if isinstance(source, dict):
-        data = source.get("data", "")
-        media_type = source.get("media_type", "image/png")
-        source_type = source.get("type", "base64")
-
-        if data and source_type == "base64":
-            components.append(
-                Div(
-                    Img(
-                        src=f"data:{media_type};base64,{data}",
-                        alt="User uploaded image",
-                        cls="max-w-full h-auto rounded",
-                        style="max-height: 600px;"
-                    ),
-                    cls="mb-4 p-3 bg-gray-800 rounded",
-                )
-            )
-```
-
-**Location 2: Tool Result Content (Scenario C)**
-- Handles images in tool_result content arrays
-- Example: Tool results with embedded image responses
-```python
-elif content_type == "image":
-    source = content_item.get("source", {})
-    if isinstance(source, dict):
-        data = source.get("data", "")
-        media_type = source.get("media_type", "image/png")
-        source_type = source.get("type", "base64")
-
-        if data and source_type == "base64":
-            tool_result_components.append(
-                Div(
-                    Img(
-                        src=f"data:{media_type};base64,{data}",
-                        alt="Content image",
-                        cls="max-w-full h-auto rounded",
-                        style="max-height: 600px;"
-                    ),
-                    cls="mt-2",
-                )
-            )
-```
-
-**Location 3: Tool Result Data (toolUseResult field)**
-- Handles images in the `toolUseResult` field for MCP tools (list format)
-- Example: Puppeteer screenshot results
-```python
-elif isinstance(tool_use_result, list):
-    for content_item in tool_use_result:
-        if isinstance(content_item, dict):
-            item_type = content_item.get("type")
-
-            if item_type == "image":
-                source = content_item.get("source", {})
-                if isinstance(source, dict):
-                    data = source.get("data", "")
-                    media_type = source.get("media_type", "image/png")
-                    source_type = source.get("type", "base64")
-
-                    if data and source_type == "base64":
-                        components.append(
-                            Div(
-                                Img(
-                                    src=f"data:{media_type};base64,{data}",
-                                    alt="Tool result image",
-                                    cls="max-w-full h-auto rounded",
-                                    style="max-height: 600px;"
-                                ),
-                                cls="mb-4 p-3 bg-gray-800 rounded",
-                            )
-                        )
-```
-
-**Image Data Structure**:
-```json
-{
-  "type": "image",
-  "source": {
-    "type": "base64",
-    "media_type": "image/png",
-    "data": "iVBORw0KGgoAAAANSUhEUgAAA..."
-  }
-}
-```
-
-**Image Rendering Features**:
-- Uses HTML data URI format: `data:{media_type};base64,{data}`
-- Responsive sizing: `max-width: 100%` and `max-height: 600px`
-- Proper aspect ratio maintained with `h-auto`
-- Styled with rounded corners and background padding
-- Supports all image formats (PNG, JPEG, GIF, etc.) via `media_type` field
-
-**Performance Impact**: No performance issues since images are already stored in JSONL file. Browser handles base64 decoding efficiently. Local rendering is fast and responsive.
-
-**Impact**: Images now display as actual visual content instead of JSON data, significantly improving readability for trace events containing screenshots, diagrams, or other visual information.
+**Solution**: Implemented image rendering in three locations:
+1. User/assistant message content arrays
+2. Tool result content arrays
+3. toolUseResult field for MCP tools
 
 ## 6. Pending Tasks
 
@@ -467,62 +335,91 @@ elif isinstance(tool_use_result, list):
 
 ## 7. Current Work
 
-**Image Rendering Feature Completed**
+**Session Header and Project Path Display**
 
-The most recent work completed was adding comprehensive base64 image rendering support across all event types:
+The most recent work completed was updating the session viewer header:
 
-1. Added image rendering for user/assistant message content arrays (Scenario A2) - lines ~487-506
-2. Added image rendering for tool result content arrays (Scenario C) - lines ~577-596
-3. Added image rendering for toolUseResult field (MCP tools) - lines ~634-653
-4. Code formatted with black for consistency
-5. Server auto-reloaded with changes
+**Changes Made** (main.py lines 794-823):
+1. Modified viewer route to capture `project_name` from session lookup
+2. Replaced single H3 session title with DivFullySpaced layout:
+   - Left: H4 with `uk-h4` class showing session ID
+   - Right: Span with project path in gray (text-gray-500, font-normal)
+3. Panel height increased from 70vh to 75vh for better visibility
 
-All image rendering locations are now complete and functional. User can test by:
-- Refreshing browser at http://localhost:5001
-- Clicking on events with image content
-- Verifying images display properly instead of base64 JSON
+**Code snippet**:
+```python
+return Layout(
+    Div(
+        DivFullySpaced(
+            H4(f"Session: {session_id}", cls="uk-h4"),
+            Span(project_name, cls="text-gray-500 font-normal"),
+        ),
+        # Combined panel with single border...
+        CardContainer(
+            # Left panel with height: 75vh
+            # Right panel with max-height: 75vh
+        )
+    ),
+    show_back_button=True,
+)
+```
 
-All UI enhancements and features completed:
-- ✅ Trace tree UI improvements (icons, truncation, layout, keyboard navigation)
-- ✅ Tool call/result labeling with color coding
-- ✅ Event details redesign with scenario-based rendering
-- ✅ Metrics section for usage data
-- ✅ Auto-selection of first trace event
-- ✅ Back button in header
-- ✅ Consistent hover colors
-- ✅ Border divider removed
-- ✅ MCP tool result bug fix (dict vs list handling)
-- ✅ Base64 image rendering (3 locations)
-- ✅ All changes committed and pushed
+**Previous work in this session**:
+1. ✅ Added timestamps to homepage projects (rightmost side)
+2. ✅ Sorted projects by most recent session
+3. ✅ Updated timestamp styling to text-gray-500 with regular font weight
+4. ✅ Consolidated trace tree and event details panels into single border
+5. ✅ Fixed dividing line color to match card border
+6. ✅ Removed "Trace Tree" heading
+7. ✅ Fixed bottom gap in trace tree panel
+8. ✅ Updated session header with project path
+
+All Session 3 UI improvements are complete and functional.
 
 ## 8. Optional Next Step
 
-**Ready for Testing and Commit**
+**Ready for Testing and Potential Commit**
 
-The image rendering feature is complete and ready to be tested:
+The latest changes are complete and ready for testing:
 1. Refresh browser at http://localhost:5001
-2. Navigate to session with image content
-3. Click on user messages or tool results containing images
-4. Verify images display correctly
+2. Test homepage:
+   - Verify projects show "X time ago" on right side
+   - Verify projects sorted by most recent activity
+   - Verify timestamps use gray color with regular weight
+3. Click into a session:
+   - Verify unified panel border (no gap between panels)
+   - Verify dividing line matches border color
+   - Verify trace tree panel flushes to bottom (no gap)
+   - Verify session header shows project path on right
+4. Test panel scrolling behavior with 75vh height
 
-Once tested, the changes should be committed with a message like:
+**User's most recent request (verbatim)**:
+> "Okay, and for the session ID at the top right, use uk-h4 instead. Then, on its rightmost side, include the project file path. for project file path, use just the regular weight and the standard font size with text-gray-500 as the font color."
+
+This has been completed. The session header now shows:
+- Left: Session ID with H4 (uk-h4 class)
+- Right: Project path with text-gray-500 and font-normal
+
+Once tested, consider committing with:
 ```
-feat(viewer): add base64 image rendering support
+feat(ui): add timestamps to projects and improve viewer layout
 
-- Render images in user/assistant message content
-- Render images in tool result content
-- Render images in toolUseResult field (MCP tools)
-- Support all image formats via media_type field
-- Responsive sizing with max-height 600px
+- Add "X time ago" timestamps to projects and sessions
+- Sort projects by most recent session activity
+- Consolidate trace tree and event details into single border
+- Remove trace tree heading for cleaner layout
+- Fix panel height to flush bottom (75vh)
+- Add project path to session header
+- Use consistent gray styling for secondary text
 ```
 
-The Claude Code Trace Viewer is now a fully functional application with:
-- Comprehensive event details display with scenario-based rendering
-- Tool call/result identification and labeling
-- Keyboard navigation and auto-selection
-- Clean, consistent UI with proper spacing and alignment
-- Metrics display for usage tracking
-- Full session ID display
-- Base64 image rendering in all event types
-- MCP and native tool support
-- Portable design that works on any user's system
+The Claude Code Trace Viewer now has:
+- ✅ Comprehensive event details with scenario-based rendering
+- ✅ Tool call/result identification and labeling
+- ✅ Keyboard navigation and auto-selection
+- ✅ Clean, unified panel layout with single border
+- ✅ Project/session timestamps with activity sorting
+- ✅ Session header showing project context
+- ✅ Base64 image rendering support
+- ✅ MCP and native tool support
+- ✅ Portable design for any user's system

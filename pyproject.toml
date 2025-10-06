@@ -1,6 +1,32 @@
 [project]
 name = "cc-trace-viewer"
 version = "0.1.0"
+description = "Claude Code trace viewer application for visualizing session traces"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "python-fasthtml>=0.12.29",
+    "monsterui>=1.0.29",
+    "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=25.9.0",
+    "ruff>=0.13.3",
+    "mypy>=1.18.2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = [
+    "black>=25.9.0",
+    "ruff>=0.13.3",
+    "mypy>=1.18.2",
+]
 
 [tool.ruff]
 ignore = ["F403", "F405", "F841"]
