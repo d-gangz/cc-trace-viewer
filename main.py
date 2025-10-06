@@ -507,22 +507,25 @@ def TraceTreeNode(
                                 if item.get("id") == tool_use_id:
                                     display_text = item.get("name", "unknown")
                                     break
+    elif event.event_type == "assistant":
+        label = "assistant"
+        label_color = "text-xs text-purple-500"
     else:
         label = event.event_type
         label_color = "text-xs text-gray-500"
 
-    # Format duration text
+    # Format duration text (no space between number and unit)
     duration_text = ""
     if duration is not None:
-        duration_text = f"{duration:.2f} s"
+        duration_text = f"{duration:.2f}s"
 
-    # Create eyebrow with label and optional duration
+    # Create eyebrow with label and optional duration (spaced between)
     eyebrow_content = [Span(label, cls=label_color)]
     if duration_text:
-        eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500 ml-2"))
+        eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500"))
 
     return Div(
-        Div(*eyebrow_content),
+        Div(*eyebrow_content, cls="flex justify-between"),
         Span(display_text),
         cls="trace-event",
         hx_get=f"/event/{session_id}/{event.id}",
@@ -547,12 +550,12 @@ def render_usage_metrics(usage_data: Dict[str, Any], duration: Optional[float] =
 
     metrics_items = []
 
-    # Add duration as first metric if available
+    # Add duration as first metric if available (no space between number and unit)
     if duration is not None:
         metrics_items.append(
             Div(
                 Span("Duration: ", cls="text-gray-400"),
-                Span(f"{duration:.2f} s", cls="text-white"),
+                Span(f"{duration:.2f}s", cls="text-white"),
                 cls="mb-1",
             )
         )
