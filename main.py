@@ -191,6 +191,62 @@ class TraceEvent:
                         return item.get("thinking", "")
         return ""
 
+    def calculate_duration(
+        self, previous_event: Optional["TraceEvent"], all_events: List["TraceEvent"]
+    ) -> Optional[float]:
+        """
+        Calculate duration in seconds for this event.
+
+        For thinking/assistant/tool_call: duration = this.timestamp - previous.timestamp
+        For tool_result: duration = this.timestamp - matching_tool_use.timestamp
+
+        Returns duration in seconds or None if cannot calculate
+        """
+        # Parse this event's timestamp
+        try:
+            current_time = date_parser.parse(self.timestamp)
+        except Exception:
+            return None
+
+        # For tool results, find the matching tool_use event
+        if self.is_tool_result():
+            tool_use_id = self.get_tool_use_id()
+            if tool_use_id and all_events:
+                # Find the tool_use event with matching ID
+                for event in all_events:
+                    if "message" in event.data:
+                        msg = event.data["message"]
+                        if isinstance(msg.get("content"), list):
+                            for item in msg["content"]:
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "tool_use"
+                                    and item.get("id") == tool_use_id
+                                ):
+                                    # Found matching tool_use, calculate duration
+                                    try:
+                                        tool_use_time = date_parser.parse(
+                                            event.timestamp
+                                        )
+                                        duration = (
+                                            current_time - tool_use_time
+                                        ).total_seconds()
+                                        return duration
+                                    except Exception:
+                                        return None
+            return None
+
+        # For thinking/assistant/tool_call: use previous event
+        if previous_event:
+            try:
+                previous_time = date_parser.parse(previous_event.timestamp)
+                duration = (current_time - previous_time).total_seconds()
+                return duration
+            except Exception:
+                return None
+
+        return None
+
     def get_display_text(self) -> str:
         """Get human-readable text for display"""
         # For summary type
@@ -216,8 +272,8 @@ class TraceEvent:
                         elif item.get("type") == "thinking":
                             # Return first 2 lines of thinking text
                             thinking_text = item.get("thinking", "")
-                            lines = thinking_text.split('\n')
-                            return '\n'.join(lines[:2])
+                            lines = thinking_text.split("\n")
+                            return "\n".join(lines[:2])
                 return "Multiple content items"
 
         # For system events
@@ -409,12 +465,20 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
 
 
 def TraceTreeNode(
-    event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None
+    event: TraceEvent,
+    session_id: str,
+    all_events: Optional[List[TraceEvent]] = None,
+    previous_event: Optional[TraceEvent] = None,
 ):
     """Flat timeline event node"""
     node_id = f"node-{event.id}"
 
     display_text = event.get_display_text()
+
+    # Calculate duration for non-user events (but include tool_result which has type "user")
+    duration = None
+    if event.event_type != "user" or event.is_tool_result():
+        duration = event.calculate_duration(previous_event, all_events or [])
 
     # Check if this is a thinking event
     if event.is_thinking():
@@ -447,8 +511,18 @@ def TraceTreeNode(
         label = event.event_type
         label_color = "text-xs text-gray-500"
 
+    # Format duration text
+    duration_text = ""
+    if duration is not None:
+        duration_text = f"{duration:.2f} s"
+
+    # Create eyebrow with label and optional duration
+    eyebrow_content = [Span(label, cls=label_color)]
+    if duration_text:
+        eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500 ml-2"))
+
     return Div(
-        Span(label, cls=label_color),
+        Div(*eyebrow_content),
         Span(display_text),
         cls="trace-event",
         hx_get=f"/event/{session_id}/{event.id}",
@@ -466,30 +540,55 @@ def render_markdown_content(text: str):
     )
 
 
-def render_usage_metrics(usage_data: Dict[str, Any]):
+def render_usage_metrics(usage_data: Dict[str, Any], duration: Optional[float] = None):
     """Render usage metrics section"""
-    if not usage_data:
+    if not usage_data and duration is None:
         return None
 
-    return Div(
-        H4("Metrics", cls="mb-2 font-bold"),
-        Div(
-            *[
+    metrics_items = []
+
+    # Add duration as first metric if available
+    if duration is not None:
+        metrics_items.append(
+            Div(
+                Span("Duration: ", cls="text-gray-400"),
+                Span(f"{duration:.2f} s", cls="text-white"),
+                cls="mb-1",
+            )
+        )
+
+    # Add usage metrics
+    if usage_data:
+        for key, value in usage_data.items():
+            metrics_items.append(
                 Div(
                     Span(f"{key}: ", cls="text-gray-400"),
                     Span(str(value), cls="text-white"),
                     cls="mb-1",
                 )
-                for key, value in usage_data.items()
-            ],
+            )
+
+    return Div(
+        H4("Metrics", cls="mb-2 font-bold"),
+        Div(
+            *metrics_items,
             cls="mb-4 p-3 bg-gray-800 rounded",
         ),
     )
 
 
-def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None):
+def DetailPanel(
+    event: TraceEvent,
+    all_events: Optional[List[TraceEvent]] = None,
+    previous_event: Optional[TraceEvent] = None,
+):
     """Detail panel showing event data"""
     components = []
+
+    # Calculate duration for non-user events (but include tool_result which has type "user")
+    duration = None
+    if (event.event_type != "user" or event.is_tool_result()) and all_events:
+        duration = event.calculate_duration(previous_event, all_events)
 
     # Check if event has message content
     if "message" in event.data:
@@ -498,9 +597,9 @@ def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None
         usage = msg.get("usage")  # Usage is inside message object
 
         if isinstance(content, list):
-            # Add metrics section if usage exists
-            if usage:
-                metrics = render_usage_metrics(usage)
+            # Add metrics section if usage or duration exists
+            if usage or duration is not None:
+                metrics = render_usage_metrics(usage, duration)
                 if metrics:
                     components.append(metrics)
 
@@ -852,7 +951,11 @@ def viewer(session_id: str):
 
     trace_tree = parse_session_file(session_file)
 
-    tree_nodes = [TraceTreeNode(event, session_id, trace_tree) for event in trace_tree]
+    # Create tree nodes with previous event context for duration calculation
+    tree_nodes = []
+    for idx, event in enumerate(trace_tree):
+        previous_event = trace_tree[idx - 1] if idx > 0 else None
+        tree_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
 
     return Layout(
         Div(
@@ -936,7 +1039,14 @@ def event(session_id: str, id: str):
             cls="p-4",
         )
 
-    return DetailPanel(found_event, trace_tree)
+    # Find previous event for duration calculation
+    previous_event = None
+    for idx, event in enumerate(trace_tree):
+        if event.id == id and idx > 0:
+            previous_event = trace_tree[idx - 1]
+            break
+
+    return DetailPanel(found_event, trace_tree, previous_event)
 
 
 # Start server
