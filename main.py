@@ -359,7 +359,7 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
                 A(
                     DivFullySpaced(
                         Span(session.session_id, cls=TextT.bold),
-                        Span(relative_time, cls=TextT.muted + " " + TextT.sm),
+                        Span(relative_time, cls="text-gray-500 font-normal"),
                     ),
                     href=f"/viewer/{session.session_id}",
                     cls="hover:bg-gray-800 p-2 rounded block",
@@ -367,8 +367,18 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
             )
         )
 
+    # Get most recent session timestamp for this project
+    most_recent = max(sessions, key=lambda s: s.created_at)
+    project_time = get_relative_time(most_recent.created_at)
+
     return Li(
-        A(project_name, cls="uk-accordion-title font-bold"),
+        A(
+            DivFullySpaced(
+                Span(project_name),
+                Span(project_time, cls="text-gray-500 font-normal"),
+            ),
+            cls="uk-accordion-title font-bold",
+        ),
         Div(Ul(*session_items, cls="space-y-1 mt-2"), cls="uk-accordion-content"),
     )
 
@@ -758,9 +768,16 @@ def index():
 
     projects = group_sessions_by_project(sessions)
 
+    # Sort projects by most recent session (descending)
+    sorted_projects = sorted(
+        projects.items(),
+        key=lambda item: max(s.created_at for s in item[1]),
+        reverse=True,
+    )
+
     accordion_items = [
         ProjectAccordion(project_name, project_sessions)
-        for project_name, project_sessions in sorted(projects.items())
+        for project_name, project_sessions in sorted_projects
     ]
 
     return Layout(
