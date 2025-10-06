@@ -486,13 +486,42 @@ def TraceTreeNode(
         label_color = "text-xs text-blue-500"
     # Check if this is a tool call
     elif event.is_tool_call():
+        # Get the tool call ID and extract last 4 characters
+        tool_id = None
+        if "message" in event.data:
+            msg = event.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_id = item.get("id", "")
+                        break
+
         label = "tool call"
-        label_color = "text-xs text-yellow-500"
+        if tool_id and len(tool_id) >= 4:
+            last_4 = tool_id[-4:]
+            label = Span(
+                Span("tool call ", cls="text-xs text-yellow-500"),
+                Span(last_4, cls="text-xs text-gray-500 font-normal"),
+            )
+        else:
+            label = Span("tool call", cls="text-xs text-yellow-500")
+        label_color = None  # Already set in label
     elif event.is_tool_result():
-        label = "tool result"
-        label_color = "text-xs text-green-500"
-        # Find the corresponding tool_use event to get the tool name
+        # Get tool_use_id and extract last 4 characters
         tool_use_id = event.get_tool_use_id()
+
+        label = "tool result"
+        if tool_use_id and len(tool_use_id) >= 4:
+            last_4 = tool_use_id[-4:]
+            label = Span(
+                Span("tool result ", cls="text-xs text-green-500"),
+                Span(last_4, cls="text-xs text-gray-500 font-normal"),
+            )
+        else:
+            label = Span("tool result", cls="text-xs text-green-500")
+        label_color = None  # Already set in label
+
+        # Find the corresponding tool_use event to get the tool name for display_text
         if tool_use_id and all_events:
             for e in all_events:
                 # Check if this event has a tool_use with matching id
@@ -520,7 +549,12 @@ def TraceTreeNode(
         duration_text = f"{duration:.2f}s"
 
     # Create eyebrow with label and optional duration (spaced between)
-    eyebrow_content = [Span(label, cls=label_color)]
+    # label is either a string (with label_color) or a Span element (already styled)
+    if isinstance(label, str):
+        eyebrow_content = [Span(label, cls=label_color)]
+    else:
+        eyebrow_content = [label]
+
     if duration_text:
         eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500"))
 

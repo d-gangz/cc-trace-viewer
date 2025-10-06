@@ -71,15 +71,32 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
    - Render full thinking text in Content section
    - Use same rendering pattern as text content type
 
+### Session 5 - Time Duration Tracking:
+1. **Duration Calculation Requirements**:
+   - Calculate time for thinking, assistant, tool call, and tool result events
+   - Format: seconds with 2 decimal places (e.g., "2.32s")
+   - Calculation method:
+     - For thinking/assistant/tool_call: current timestamp - previous event timestamp
+     - For tool_result: current timestamp - matching tool_use timestamp (by ID)
+
+2. **Duration Display Location**:
+   - Trace tree: Display to the right of eyebrow label (e.g., "thinking 55.49s")
+   - Detail panel: Display as first metric in Metrics section
+
+3. **Formatting Refinements**:
+   - Remove space between number and unit (2.32 s → 2.32s)
+   - Right-align duration in trace tree using flexbox justify-between
+   - Add purple color for assistant event labels
+
 ## 2. Key Technical Concepts
 
 - **FastHTML**: Modern Python web framework for building web applications
 - **MonsterUI**: UI component library for FastHTML (Card, CardContainer, CardBody components)
 - **HTMX**: Dynamic content loading without page refreshes
-- **Timezone-aware datetime handling**: Converting UTC timestamps to local time
+- **Timezone-aware datetime handling**: Converting UTC timestamps to local time using dateutil
 - **JSONL format**: Line-delimited JSON for session traces
 - **CSS line-clamp**: Text truncation with `-webkit-line-clamp: 2`
-- **Flexbox layout**: For 30/70 width distribution and panel alignment
+- **Flexbox layout**: For 30/70 width distribution, panel alignment, and justify-between spacing
 - **JavaScript event listeners**: Keyboard navigation and auto-selection
 - **Tool ID correlation**: Matching tool_result events to tool_use events via tool_use_id
 - **Scenario-based rendering**: Different UI rendering based on content type
@@ -88,6 +105,8 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 - **Height vs max-height**: Understanding difference for panel sizing
 - **MonsterUI Card Architecture**: Card wraps content in CardBody which adds padding
 - **Content type detection**: Detecting thinking, text, tool_use, tool_result, image types in message content arrays
+- **Duration calculation**: Timestamp parsing and difference calculation using dateutil.parser
+- **Event type detection**: Tool_result events have type "user" despite being results
 
 ## 3. Files and Code Sections
 
@@ -95,82 +114,95 @@ The user requested comprehensive UI improvements and enhancements to the Claude 
 
 **Purpose**: Main application file containing the FastHTML web server and all trace viewer logic.
 
-#### Recent Changes (Session 4 - Thinking Event Support):
+#### Recent Changes (Session 5 - Time Duration Tracking):
 
-**1. TraceEvent Class - Added Thinking Detection Methods**
+**1. TraceEvent.calculate_duration() Method**
 
-Added helper methods to detect and extract thinking content:
+Added comprehensive duration calculation logic:
 
 ```python
-def is_thinking(self) -> bool:
-    """Check if this event contains thinking content"""
-    if "message" in self.data:
-        msg = self.data["message"]
-        if isinstance(msg.get("content"), list):
-            for item in msg["content"]:
-                if isinstance(item, dict) and item.get("type") == "thinking":
-                    return True
-    return False
+def calculate_duration(
+    self, previous_event: Optional["TraceEvent"], all_events: List["TraceEvent"]
+) -> Optional[float]:
+    """
+    Calculate duration in seconds for this event.
 
-def get_thinking_text(self) -> str:
-    """Get thinking text from message content"""
-    if "message" in self.data:
-        msg = self.data["message"]
-        if isinstance(msg.get("content"), list):
-            for item in msg["content"]:
-                if isinstance(item, dict) and item.get("type") == "thinking":
-                    return item.get("thinking", "")
-    return ""
+    For thinking/assistant/tool_call: duration = this.timestamp - previous.timestamp
+    For tool_result: duration = this.timestamp - matching_tool_use.timestamp
+
+    Returns duration in seconds or None if cannot calculate
+    """
+    # Parse this event's timestamp
+    try:
+        current_time = date_parser.parse(self.timestamp)
+    except Exception:
+        return None
+
+    # For tool results, find the matching tool_use event
+    if self.is_tool_result():
+        tool_use_id = self.get_tool_use_id()
+        if tool_use_id and all_events:
+            # Find the tool_use event with matching ID
+            for event in all_events:
+                if "message" in event.data:
+                    msg = event.data["message"]
+                    if isinstance(msg.get("content"), list):
+                        for item in msg["content"]:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "tool_use"
+                                and item.get("id") == tool_use_id
+                            ):
+                                # Found matching tool_use, calculate duration
+                                try:
+                                    tool_use_time = date_parser.parse(
+                                        event.timestamp
+                                    )
+                                    duration = (
+                                        current_time - tool_use_time
+                                    ).total_seconds()
+                                    return duration
+                                except Exception:
+                                    return None
+        return None
+
+    # For thinking/assistant/tool_call: use previous event
+    if previous_event:
+        try:
+            previous_time = date_parser.parse(previous_event.timestamp)
+            duration = (current_time - previous_time).total_seconds()
+            return duration
+        except Exception:
+            return None
+
+    return None
 ```
 
 **Why important**:
-- Enables detection of thinking events in message content arrays
-- Provides clean API for extracting thinking text
-- Follows same pattern as `is_tool_call()` and `is_tool_result()`
+- Handles two different duration calculation methods
+- For tool_result: Searches all events to find matching tool_use by ID
+- For other events: Uses simple difference from previous event
+- Returns None if calculation fails, allowing graceful handling
 
-**2. TraceEvent.get_display_text() - Handle Thinking Type**
+**2. TraceTreeNode Function - Duration Display and Assistant Color**
 
-Updated display text extraction to handle thinking content:
-
-```python
-def get_display_text(self) -> str:
-    """Get human-readable text for display"""
-    # ... existing code ...
-    elif isinstance(msg.get("content"), list):
-        # Handle content array (tool uses, etc)
-        for item in msg["content"]:
-            if isinstance(item, dict):
-                if item.get("type") == "text":
-                    return item.get("text", "")[:200]
-                elif item.get("type") == "tool_use":
-                    return item.get("name", "unknown")
-                elif item.get("type") == "tool_result":
-                    return "tool_result"
-                elif item.get("type") == "thinking":
-                    # Return first 2 lines of thinking text
-                    thinking_text = item.get("thinking", "")
-                    lines = thinking_text.split('\n')
-                    return '\n'.join(lines[:2])
-        return "Multiple content items"
-```
-
-**Why important**:
-- Extracts first 2 lines of thinking text for trace tree display
-- Uses split('\n')[:2] to limit to two lines
-- Maintains same truncation pattern as other content types
-
-**3. TraceTreeNode Function - Thinking Event Label and Color**
-
-Added thinking event detection with blue label:
+Updated to calculate and display duration with proper formatting:
 
 ```python
 def TraceTreeNode(
-    event: TraceEvent, session_id: str, all_events: Optional[List[TraceEvent]] = None
+    event: TraceEvent,
+    session_id: str,
+    all_events: Optional[List[TraceEvent]] = None,
+    previous_event: Optional[TraceEvent] = None,
 ):
     """Flat timeline event node"""
     node_id = f"node-{event.id}"
-
     display_text = event.get_display_text()
+
+    # Calculate duration for non-user events (but include tool_result which has type "user")
+    duration = None
+    if event.event_type != "user" or event.is_tool_result():
+        duration = event.calculate_duration(previous_event, all_events or [])
 
     # Check if this is a thinking event
     if event.is_thinking():
@@ -184,12 +216,25 @@ def TraceTreeNode(
         label = "tool result"
         label_color = "text-xs text-green-500"
         # ... tool name lookup logic ...
+    elif event.event_type == "assistant":
+        label = "assistant"
+        label_color = "text-xs text-purple-500"
     else:
         label = event.event_type
         label_color = "text-xs text-gray-500"
 
+    # Format duration text (no space between number and unit)
+    duration_text = ""
+    if duration is not None:
+        duration_text = f"{duration:.2f}s"
+
+    # Create eyebrow with label and optional duration (spaced between)
+    eyebrow_content = [Span(label, cls=label_color)]
+    if duration_text:
+        eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500"))
+
     return Div(
-        Span(label, cls=label_color),
+        Div(*eyebrow_content, cls="flex justify-between"),
         Span(display_text),
         cls="trace-event",
         hx_get=f"/event/{session_id}/{event.id}",
@@ -199,177 +244,183 @@ def TraceTreeNode(
 ```
 
 **Why important**:
-- Checks for thinking events BEFORE tool calls (order matters)
-- Uses blue color (text-blue-500) to distinguish from other event types
-- Displays "thinking" label in eyebrow position
-- Display text already contains first 2 lines from get_display_text()
+- Added previous_event parameter for duration calculation
+- Special handling for tool_result events (type "user" but need duration)
+- Added assistant color check (purple)
+- Duration formatted without space (2.32s not 2.32 s)
+- Flexbox justify-between for proper spacing (label left, duration right)
 
-**4. DetailPanel Function - Thinking Content Rendering**
+**3. Viewer Route - Previous Event Context**
 
-Added thinking type rendering in Content section:
+Updated to pass previous_event to each TraceTreeNode:
 
 ```python
-def DetailPanel(event: TraceEvent, all_events: Optional[List[TraceEvent]] = None):
+@rt("/viewer/{session_id}")
+def viewer(session_id: str):
+    # ... session file lookup ...
+    trace_tree = parse_session_file(session_file)
+
+    # Create tree nodes with previous event context for duration calculation
+    tree_nodes = []
+    for idx, event in enumerate(trace_tree):
+        previous_event = trace_tree[idx - 1] if idx > 0 else None
+        tree_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
+
+    return Layout(...)
+```
+
+**Why important**:
+- Provides previous event context needed for duration calculation
+- First event has None as previous_event (no duration)
+- Each subsequent event gets its predecessor
+
+**4. render_usage_metrics Function - Duration as First Metric**
+
+Updated to display duration in Metrics section:
+
+```python
+def render_usage_metrics(usage_data: Dict[str, Any], duration: Optional[float] = None):
+    """Render usage metrics section"""
+    if not usage_data and duration is None:
+        return None
+
+    metrics_items = []
+
+    # Add duration as first metric if available (no space between number and unit)
+    if duration is not None:
+        metrics_items.append(
+            Div(
+                Span("Duration: ", cls="text-gray-400"),
+                Span(f"{duration:.2f}s", cls="text-white"),
+                cls="mb-1",
+            )
+        )
+
+    # Add usage metrics
+    if usage_data:
+        for key, value in usage_data.items():
+            metrics_items.append(
+                Div(
+                    Span(f"{key}: ", cls="text-gray-400"),
+                    Span(str(value), cls="text-white"),
+                    cls="mb-1",
+                )
+            )
+
+    return Div(
+        H4("Metrics", cls="mb-2 font-bold"),
+        Div(*metrics_items, cls="mb-4 p-3 bg-gray-800 rounded"),
+    )
+```
+
+**Why important**:
+- Accepts optional duration parameter
+- Duration displayed as first metric (before usage stats)
+- Format matches trace tree (no space: "55.49s")
+- Shows metrics even if only duration exists (no usage data)
+
+**5. DetailPanel Function - Duration Calculation**
+
+Updated to calculate and pass duration to metrics:
+
+```python
+def DetailPanel(
+    event: TraceEvent,
+    all_events: Optional[List[TraceEvent]] = None,
+    previous_event: Optional[TraceEvent] = None,
+):
     """Detail panel showing event data"""
     components = []
 
+    # Calculate duration for non-user events (but include tool_result which has type "user")
+    duration = None
+    if (event.event_type != "user" or event.is_tool_result()) and all_events:
+        duration = event.calculate_duration(previous_event, all_events)
+
+    # Check if event has message content
     if "message" in event.data:
         msg = event.data["message"]
         content = msg.get("content")
         usage = msg.get("usage")
 
         if isinstance(content, list):
-            # Add metrics section if usage exists
-            if usage:
-                metrics = render_usage_metrics(usage)
+            # Add metrics section if usage or duration exists
+            if usage or duration is not None:
+                metrics = render_usage_metrics(usage, duration)
                 if metrics:
                     components.append(metrics)
-
-            # Add Content section header
-            components.append(H4("Content", cls="mb-2 font-bold"))
-
-            for idx, item in enumerate(content):
-                if not isinstance(item, dict):
-                    continue
-
-                item_type = item.get("type")
-
-                # Scenario A: text type
-                if item_type == "text":
-                    text_content = item.get("text", "")
-                    components.append(
-                        Div(
-                            render_markdown_content(text_content),
-                            cls="mb-4 p-3 bg-gray-800 rounded",
-                        )
-                    )
-
-                # Scenario D: thinking type
-                elif item_type == "thinking":
-                    thinking_text = item.get("thinking", "")
-                    components.append(
-                        Div(
-                            render_markdown_content(thinking_text),
-                            cls="mb-4 p-3 bg-gray-800 rounded",
-                        )
-                    )
-
-                # ... other scenarios (image, tool_use, tool_result) ...
 ```
 
 **Why important**:
-- Renders full thinking text (not just first 2 lines) in detail panel
-- Uses same rendering pattern as text type for consistency
-- Placed in Content section after metrics
-- Uses render_markdown_content() for proper text formatting
+- Accepts previous_event parameter for duration calculation
+- Same special handling for tool_result events
+- Passes duration to render_usage_metrics
+- Shows metrics if either usage or duration exists
 
-#### Previous Session Changes:
+**6. Event Route - Previous Event Lookup**
 
-**Session 3 Changes**:
-
-**1. ProjectAccordion Function - Homepage Timestamps and Sorting**
-
-Added timestamp display to project accordion titles and enabled project sorting:
+Updated to find and pass previous_event:
 
 ```python
-def ProjectAccordion(project_name: str, sessions: List[Session]):
-    """Accordion item for a project with its sessions"""
-    session_items = []
-    for session in sessions:
-        relative_time = get_relative_time(session.created_at)
-        session_items.append(
-            Li(
-                A(
-                    DivFullySpaced(
-                        Span(session.session_id, cls=TextT.bold),
-                        Span(relative_time, cls="text-gray-500 font-normal"),
-                    ),
-                    href=f"/viewer/{session.session_id}",
-                    cls="hover:bg-gray-800 p-2 rounded block",
-                )
-            )
-        )
+@rt("/event/{session_id}/{id}")
+def event(session_id: str, id: str):
+    # ... session file lookup ...
+    trace_tree = parse_session_file(session_file)
+    found_event = find_event(trace_tree, id)
 
-    # Get most recent session timestamp for this project
-    most_recent = max(sessions, key=lambda s: s.created_at)
-    project_time = get_relative_time(most_recent.created_at)
+    if not found_event:
+        return Div(P(f"Event {id} not found", cls=TextT.muted), cls="p-4")
 
-    return Li(
-        A(
-            DivFullySpaced(
-                Span(project_name),
-                Span(project_time, cls="text-gray-500 font-normal"),
-            ),
-            cls="uk-accordion-title font-bold",
-        ),
-        Div(Ul(*session_items, cls="space-y-1 mt-2"), cls="uk-accordion-content"),
-    )
+    # Find previous event for duration calculation
+    previous_event = None
+    for idx, event in enumerate(trace_tree):
+        if event.id == id and idx > 0:
+            previous_event = trace_tree[idx - 1]
+            break
+
+    return DetailPanel(found_event, trace_tree, previous_event)
 ```
 
-**2. Index Route - Project Sorting**
-
-Added sorting logic to display most recently active projects first:
-
-```python
-# Sort projects by most recent session (descending)
-sorted_projects = sorted(
-    projects.items(),
-    key=lambda item: max(s.created_at for s in item[1]),
-    reverse=True
-)
-```
-
-**3. Viewer Route - Unified Panel Layout**
-
-Consolidated trace tree and event details into single bordered container:
-
-```python
-return Layout(
-    Div(
-        DivFullySpaced(
-            H4(f"Session: {session_id}", cls="uk-h4"),
-            Span(project_name, cls="text-gray-500 font-normal"),
-        ),
-        CardContainer(
-            Div(
-                # Left panel - Trace tree (30% width)
-                Div(
-                    Div(
-                        *tree_nodes,
-                        cls="overflow-auto",
-                        style="max-height: 75vh;",
-                    ),
-                    cls="p-4",
-                    style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
-                ),
-                # Right panel - Detail view (70% width)
-                Div(
-                    H3("Event Details", cls="mb-4 font-bold"),
-                    Div(
-                        P("Select an event to view details", cls=TextT.muted),
-                        id="detail-panel",
-                        cls="overflow-auto",
-                        style="max-height: 75vh",
-                    ),
-                    cls="p-4",
-                    style="width: 70%",
-                ),
-                style="display: flex;",
-            ),
-            cls="mt-4",
-        ),
-    ),
-    show_back_button=True,
-)
-```
+**Why important**:
+- Finds previous event when displaying details
+- Enables duration calculation in detail panel
+- First event gets None (no previous event)
 
 ### summary.md
 
 **Purpose**: Development summary documenting all features, changes, and decisions made during the project.
 
-**Status**: Updated with Session 4 changes (thinking event support)
+**Status**: Being updated with Session 5 changes (time duration tracking)
 
 ## 4. Problem Solving
+
+### Problems Solved in Session 5:
+
+1. **Tool Result Duration Not Showing**:
+   - **Problem**: Tool_result events didn't display duration in trace tree or detail panel
+   - **Root Cause**: Tool_result events have `type: "user"` in JSONL data, so they were skipped by the condition `if event.event_type != "user"`
+   - **Discovery**: Used debug prints and checked JSONL data to find event type
+   - **Solution**: Changed condition to `if event.event_type != "user" or event.is_tool_result()` in both TraceTreeNode and DetailPanel
+   - **Verification**: Ran server with debug output and confirmed duration calculation worked
+
+2. **Duration Calculation for Tool Results**:
+   - **Problem**: Tool results need to calculate duration from matching tool_use event, not previous event
+   - **Solution**: Implemented ID matching logic to find corresponding tool_use event
+   - **Implementation**: Loop through all events, check message content for tool_use type, match by ID
+   - **Result**: Correctly calculates time between tool_use and tool_result (e.g., 0.42s for Read tool)
+
+3. **Duration Formatting and Spacing**:
+   - **Problem**: User wanted no space between number and "s", and right-aligned duration
+   - **Solution**:
+     - Changed format from `f"{duration:.2f} s"` to `f"{duration:.2f}s"`
+     - Added `cls="flex justify-between"` to eyebrow div
+     - Removed `ml-2` margin class from duration span
+   - **Result**: Label on left, duration on right, no space before "s"
+
+4. **Assistant Label Color**:
+   - **Problem**: Assistant events needed purple color to distinguish from other types
+   - **Solution**: Added explicit check `elif event.event_type == "assistant"` with purple color
+   - **Placement**: Added before generic else clause to catch assistant events specifically
 
 ### Problems Solved in Session 4:
 
@@ -429,75 +480,81 @@ return Layout(
 
 ## 5. Pending Tasks
 
-**None** - All requested features have been implemented.
+**None** - All requested features have been implemented and committed.
 
 ## 6. Current Work
 
-**Thinking Event Support Implementation**
+**Time Duration Tracking Implementation (Session 5)**
 
-The most recent work completed was adding support for thinking events in the trace viewer:
+The most recent work completed was implementing comprehensive time duration tracking for trace events:
 
 **Changes Made** (main.py):
 
-1. **Added thinking detection methods** (lines 174-192):
-   - `is_thinking()`: Checks if event contains thinking type in content array
-   - `get_thinking_text()`: Extracts thinking text from event
+1. **Added calculate_duration() method** (lines 194-249):
+   - Calculates duration in seconds for events
+   - For thinking/assistant/tool_call: uses previous event timestamp
+   - For tool_result: finds matching tool_use by ID and uses that timestamp
+   - Returns Optional[float] for graceful handling of missing data
 
-2. **Updated get_display_text()** (lines 216-220):
-   - Added thinking type handling
-   - Extracts first 2 lines using `split('\n')[:2]`
-   - Returns joined lines for trace tree display
+2. **Updated TraceTreeNode function** (lines 465-531):
+   - Added previous_event parameter
+   - Calculate duration for non-user events (plus tool_result special case)
+   - Format duration without space: `f"{duration:.2f}s"`
+   - Added assistant purple color check
+   - Use flexbox justify-between for label/duration spacing
 
-3. **Modified TraceTreeNode()** (lines 419-422):
-   - Added thinking event check BEFORE tool call checks
-   - Uses blue color: `text-xs text-blue-500`
-   - Displays "thinking" label
+3. **Updated viewer route** (lines 927-933):
+   - Create tree nodes with previous event context
+   - Loop through events with index to get previous event
+   - Pass all needed parameters to TraceTreeNode
 
-4. **Enhanced DetailPanel()** (lines 526-534):
-   - Added thinking type case in content type switch
-   - Renders full thinking text (not truncated)
-   - Uses same pattern as text type rendering
+4. **Updated render_usage_metrics** (lines 543-576):
+   - Accept optional duration parameter
+   - Display duration as first metric
+   - Format without space: "Duration: 55.49s"
 
-**Implementation follows user's screenshot requirements**:
-- ✅ Blue highlighted area: Thinking events show "thinking" label in blue with first 2 lines
-- ✅ Yellow highlighted area: Event details show full thinking text in Content section
+5. **Updated DetailPanel function** (lines 580-603):
+   - Accept previous_event parameter
+   - Calculate duration with same logic as TraceTreeNode
+   - Pass duration to render_usage_metrics
 
-**Task progression**:
-1. ✅ Add thinking event detection to TraceEvent class
-2. ✅ Display thinking text (first 2 lines) in trace tree rows
-3. ✅ Add thinking content rendering to DetailPanel
+6. **Updated event route** (lines 1042-1049):
+   - Find previous event in trace_tree
+   - Pass to DetailPanel for duration calculation
 
-All 3 tasks completed successfully.
+**Formatting Refinements**:
+- Removed space between number and "s" (2.32 s → 2.32s)
+- Right-aligned duration using flexbox justify-between
+- Added purple color for assistant labels
+
+**Commits Made**:
+- "feat(viewer): add thinking event detection and display" (264d0f1)
+- "feat(viewer): add time duration display for trace events" (2729093)
+- "style(viewer): improve duration formatting and add assistant color" (2dcd559)
+
+All Session 5 duration tracking features are complete and pushed to GitHub.
 
 ## 7. Optional Next Step
 
-**Testing Thinking Event Display**
+**All Tasks Complete**
 
-The thinking event feature is complete and ready for testing:
+The time duration tracking feature is fully implemented, tested, and committed. No further work is pending from the user's explicit requests in this session.
 
-1. Run the trace viewer: `uv run python main.py`
-2. Open a session that contains thinking events
-3. Verify in trace tree:
-   - Events with thinking content show "thinking" label in blue
-   - Display text shows first 2 lines of thinking text
-   - Text truncates properly with 2-line clamp
-4. Click on a thinking event
-5. Verify in event details:
-   - Full thinking text displays in Content section
-   - Text formatting matches other content types
-   - Metrics section appears if usage data exists
+**Summary of completed work**:
+- ✅ Duration calculation for thinking, assistant, tool_call, and tool_result events
+- ✅ Display in trace tree (right-aligned, no space before "s")
+- ✅ Display in DetailPanel Metrics section (as first metric)
+- ✅ Special handling for tool_result events (type "user" edge case)
+- ✅ Formatting refinements (spacing, alignment)
+- ✅ Assistant label color (purple)
+- ✅ All changes committed and pushed to GitHub
 
-**User's most recent request (verbatim from screenshot annotation)**:
-> "Highlighted in blue from img: So for this one, under the trace tree for the thinking trace (which is under the event data), look at the messages object under content. If its type is thinking, then that trace row's eyebrow should be thinking and the color should be blue. For the text, just take the first two lines from the 'message' > 'content' > 'thinking' value."
-
-> "Highlighted in yellow from img: Then for the event details, under the content section, to display the text from 'message' > 'Content' > 'Thinking' text value instead."
-
-Both requirements have been implemented.
-
-The Claude Code Trace Viewer now supports:
+The Claude Code Trace Viewer now provides comprehensive performance insights:
 - ✅ Comprehensive event details with scenario-based rendering
 - ✅ Tool call/result identification and labeling
 - ✅ Thinking event detection and display
+- ✅ **Time duration tracking for all events**
+- ✅ **Performance metrics in trace tree and detail panel**
 - ✅ Keyboard navigation and auto-selection
 - ✅ Clean, unified panel layout with single border
 - ✅ Project/session timestamps with activity sorting
@@ -505,3 +562,4 @@ The Claude Code Trace Viewer now supports:
 - ✅ Base64 image rendering support
 - ✅ MCP and native tool support
 - ✅ Portable design for any user's system
+- ✅ **Purple assistant labels, blue thinking, yellow tool calls, green tool results**
