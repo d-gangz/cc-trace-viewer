@@ -33,3 +33,6 @@ htmlcov/
 dist/
 build/
 *.egg-info/
+
+# Custom UI context
+custom-ui-context/

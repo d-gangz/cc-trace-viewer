@@ -58,6 +58,17 @@ custom_css = Style(
         background-color: rgb(17, 24, 39);
         border-left-color: rgb(59, 130, 246);
     }
+
+    .trace-event-sidechain {
+        padding-left: 16px;
+        border-left: 2px solid rgb(107, 114, 128);
+        margin-left: 8px;
+        border-radius: 0;
+    }
+
+    .trace-event-sidechain.selected {
+        border-left-color: rgb(59, 130, 246);
+    }
 """
 )
 
@@ -130,6 +141,7 @@ class TraceEvent:
     parent_id: Optional[str] = None  # parentUuid from JSONL
     children: List["TraceEvent"] = field(default_factory=list)
     level: int = 0
+    is_sidechain: bool = False  # isSidechain from JSONL
 
     def is_tool_call(self) -> bool:
         """Check if this event is a tool call"""
@@ -378,6 +390,7 @@ def parse_session_file(file_path: Path) -> List[TraceEvent]:
                     timestamp=data.get("timestamp", ""),
                     data=data,
                     parent_id=data.get("parentUuid"),
+                    is_sidechain=data.get("isSidechain", False),
                 )
                 events.append(event)
             except Exception as e:
@@ -488,24 +501,49 @@ def TraceTreeNode(
     elif event.is_tool_call():
         # Get the tool call ID and extract last 4 characters
         tool_id = None
+        tool_name = None
+        subagent_type = None
+
         if "message" in event.data:
             msg = event.data["message"]
             if isinstance(msg.get("content"), list):
                 for item in msg["content"]:
                     if isinstance(item, dict) and item.get("type") == "tool_use":
                         tool_id = item.get("id", "")
+                        tool_name = item.get("name", "")
+                        # Check if this is a Task tool (subagent)
+                        if tool_name == "Task":
+                            input_data = item.get("input", {})
+                            subagent_type = input_data.get("subagent_type", "")
                         break
 
-        label = "tool call"
-        if tool_id and len(tool_id) >= 4:
-            last_4 = tool_id[-4:]
-            label = Span(
-                Span("tool call ", cls="text-xs text-yellow-500"),
-                Span(last_4, cls="text-xs text-gray-500 font-normal"),
-            )
+        # Handle Task tool (subagent) differently
+        if tool_name == "Task" and subagent_type:
+            # Change display text to show the subagent name
+            display_text = subagent_type
+
+            label = "tool call"
+            if tool_id and len(tool_id) >= 4:
+                last_4 = tool_id[-4:]
+                label = Span(
+                    Span("subagent ", cls="text-xs text-cyan-500"),
+                    Span(last_4, cls="text-xs text-gray-500 font-normal"),
+                )
+            else:
+                label = Span("subagent", cls="text-xs text-cyan-500")
+            label_color = None  # Already set in label
         else:
-            label = Span("tool call", cls="text-xs text-yellow-500")
-        label_color = None  # Already set in label
+            # Regular tool call
+            label = "tool call"
+            if tool_id and len(tool_id) >= 4:
+                last_4 = tool_id[-4:]
+                label = Span(
+                    Span("tool call ", cls="text-xs text-yellow-500"),
+                    Span(last_4, cls="text-xs text-gray-500 font-normal"),
+                )
+            else:
+                label = Span("tool call", cls="text-xs text-yellow-500")
+            label_color = None  # Already set in label
     elif event.is_tool_result():
         # Get tool_use_id and extract last 4 characters
         tool_use_id = event.get_tool_use_id()
@@ -558,10 +596,15 @@ def TraceTreeNode(
     if duration_text:
         eyebrow_content.append(Span(duration_text, cls="text-xs text-gray-500"))
 
+    # Build CSS classes for sidechain events
+    css_classes = "trace-event"
+    if event.is_sidechain:
+        css_classes += " trace-event-sidechain"
+
     return Div(
         Div(*eyebrow_content, cls="flex justify-between"),
         Span(display_text),
-        cls="trace-event",
+        cls=css_classes,
         hx_get=f"/event/{session_id}/{event.id}",
         hx_target="#detail-panel",
         id=node_id,
