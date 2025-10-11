@@ -652,7 +652,7 @@ def render_usage_metrics(usage_data: Dict[str, Any], duration: Optional[float] =
         H4("Metrics", cls="mb-2 font-bold"),
         Div(
             *metrics_items,
-            cls="mb-4 p-3 bg-gray-800 rounded",
+            cls="mb-4 p-3 bg-gray-900 rounded",
         ),
     )
 
@@ -698,7 +698,7 @@ def DetailPanel(
                     components.append(
                         Div(
                             render_markdown_content(text_content),
-                            cls="mb-4 p-3 bg-gray-800 rounded",
+                            cls="mb-4 p-3 bg-gray-900 rounded",
                         )
                     )
 
@@ -708,7 +708,7 @@ def DetailPanel(
                     components.append(
                         Div(
                             render_markdown_content(thinking_text),
-                            cls="mb-4 p-3 bg-gray-800 rounded",
+                            cls="mb-4 p-3 bg-gray-900 rounded",
                         )
                     )
 
@@ -729,7 +729,7 @@ def DetailPanel(
                                         cls="max-w-full h-auto rounded",
                                         style="max-height: 600px;",
                                     ),
-                                    cls="mb-4 p-3 bg-gray-800 rounded",
+                                    cls="mb-4 p-3 bg-gray-900 rounded",
                                 )
                             )
 
@@ -754,7 +754,7 @@ def DetailPanel(
                                     cls="text-white text-sm whitespace-pre-wrap break-words mt-1",
                                 ),
                             ),
-                            cls="mb-4 p-3 bg-gray-800 rounded",
+                            cls="mb-4 p-3 bg-gray-900 rounded",
                         )
                     )
 
@@ -848,7 +848,7 @@ def DetailPanel(
 
                     # Wrap all tool result components
                     components.append(
-                        Div(*tool_result_components, cls="mb-4 p-3 bg-gray-800 rounded")
+                        Div(*tool_result_components, cls="mb-4 p-3 bg-gray-900 rounded")
                     )
 
                     # Add Tool Result section
@@ -884,7 +884,7 @@ def DetailPanel(
                                         )
                                         for key, value in tool_use_result.items()
                                     ],
-                                    cls="mb-4 p-3 bg-gray-800 rounded",
+                                    cls="mb-4 p-3 bg-gray-900 rounded",
                                 )
                             )
                         elif isinstance(tool_use_result, list):
@@ -899,7 +899,7 @@ def DetailPanel(
                                                 render_markdown_content(
                                                     content_item.get("text", "")
                                                 ),
-                                                cls="mb-4 p-3 bg-gray-800 rounded",
+                                                cls="mb-4 p-3 bg-gray-900 rounded",
                                             )
                                         )
                                     elif item_type == "image":
@@ -921,7 +921,7 @@ def DetailPanel(
                                                             cls="max-w-full h-auto rounded",
                                                             style="max-height: 600px;",
                                                         ),
-                                                        cls="mb-4 p-3 bg-gray-800 rounded",
+                                                        cls="mb-4 p-3 bg-gray-900 rounded",
                                                     )
                                                 )
 
@@ -930,7 +930,7 @@ def DetailPanel(
             components.append(H4("Content", cls="mb-2 font-bold"))
             components.append(
                 Div(
-                    render_markdown_content(content), cls="mb-4 p-3 bg-gray-800 rounded"
+                    render_markdown_content(content), cls="mb-4 p-3 bg-gray-900 rounded"
                 )
             )
 
