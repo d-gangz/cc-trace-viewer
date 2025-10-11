@@ -13,42 +13,38 @@ A web-based viewer for Claude Code session traces, built with FastHTML and Monst
 - 🎨 **Interactive UI** - Hover and selection states for better navigation
 - ⏱️ **Relative timestamps** - Shows "2 hours ago", "3 days ago", etc.
 
-## Installation
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.11+
-- [uv](https://github.com/astral-sh/uv) (recommended) or pip
+- Python 3.11 or higher
+- [uv](https://github.com/astral-sh/uv) package manager (recommended)
 
-### Setup
+### Installation & Setup
 
-1. Clone this repository:
+1. **Clone the repository:**
 ```bash
 git clone https://github.com/d-gangz/cc-trace-viewer.git
 cd cc-trace-viewer
 ```
 
-2. Install dependencies:
+2. **Install dependencies** (choose one method):
 
-**With uv (recommended):**
+**Option A: Using uv (Recommended)**
 ```bash
+# Install dependencies from pyproject.toml
 uv sync
 ```
 
-**Alternative - Install from pyproject.toml:**
+**Option B: Using pip**
 ```bash
-# Using pip
+# Install the package with dependencies from pyproject.toml
 pip install -e .
-
-# Or using uv
-uv pip install -e .
 ```
 
-## Usage
+### Running the Application
 
-Run the application:
-
-**With uv:**
+**With uv (Recommended):**
 ```bash
 uv run python main.py
 ```
@@ -58,12 +54,21 @@ uv run python main.py
 python main.py
 ```
 
-The application will:
-1. Automatically detect your user home directory
-2. Scan `~/.claude/projects/` for session files
-3. Start a web server at http://localhost:5001
+**What happens when you run it:**
+1. ✅ Auto-detects your Claude Code sessions from `~/.claude/projects/`
+2. ✅ Starts a local web server at http://localhost:5001
+3. ✅ Opens in your browser automatically
 
-Open your browser and navigate to http://localhost:5001 to view your Claude Code traces.
+**Access the viewer:** http://localhost:5001
+
+### What's in pyproject.toml?
+
+All dependencies are managed in `pyproject.toml`:
+- **python-fasthtml** - Modern Python web framework
+- **monsterui** - UI components for FastHTML
+- **python-dateutil** - Timezone-aware datetime parsing
+
+No manual dependency installation needed - both `uv sync` and `pip install -e .` read from `pyproject.toml` automatically!
 
 ## How It Works
 
@@ -85,11 +90,15 @@ cc-trace-viewer/
 └── README.md        # This file
 ```
 
-## Requirements
+## Dependencies
 
-- FastHTML - Modern Python web framework
-- MonsterUI - UI components for FastHTML
-- python-dateutil - Timezone-aware datetime parsing
+All dependencies are automatically installed from `pyproject.toml`:
+
+- **python-fasthtml** (>=0.12.29) - Modern Python web framework
+- **monsterui** (>=1.0.29) - UI components for FastHTML
+- **python-dateutil** (>=2.9.0) - Timezone-aware datetime parsing
+
+Simply run `uv sync` or `pip install -e .` and you're ready to go!
 
 ## Contributing
 
