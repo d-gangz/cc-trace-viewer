@@ -36,3 +36,6 @@ build/
 
 # Custom UI context
 custom-ui-context/
+
+# Claude Code
+.claude/
