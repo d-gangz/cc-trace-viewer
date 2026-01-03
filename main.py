@@ -31,6 +31,39 @@ from dateutil import parser as date_parser
 from fasthtml.common import *
 from monsterui.all import *
 
+# Session cache: {session_id: {"mtime": float, "data": List[TraceEvent], "file_path": Path}}
+_session_cache: Dict[str, Dict] = {}
+
+
+def get_cached_session_data(
+    session_id: str, session_file: Path, parent_dir: Path
+) -> List:
+    """Get parsed and expanded session data, using cache if file hasn't changed."""
+    global _session_cache
+
+    try:
+        current_mtime = session_file.stat().st_mtime
+    except OSError:
+        current_mtime = 0
+
+    cached = _session_cache.get(session_id)
+    if cached and cached.get("mtime") == current_mtime:
+        return cached["data"]
+
+    # Parse fresh
+    trace_tree = parse_session_file(session_file)
+    trace_tree = expand_subagent_events(trace_tree, parent_dir)
+
+    # Cache it
+    _session_cache[session_id] = {
+        "mtime": current_mtime,
+        "data": trace_tree,
+        "file_path": session_file,
+    }
+
+    return trace_tree
+
+
 # App setup
 custom_css = Style(
     """
@@ -1610,10 +1643,8 @@ def viewer(session_id: str):
             )
         )
 
-    trace_tree = parse_session_file(session_file)
-
-    # Expand subagent events with their full trace
-    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+    # Get cached or fresh session data (populates cache for subsequent clicks)
+    trace_tree = get_cached_session_data(session_id, session_file, session_file.parent)
 
     # Create tree nodes with previous event context for duration calculation
     # Start with summary node as first item
@@ -1740,13 +1771,18 @@ def viewer(session_id: str):
 @rt("/event/{session_id}/{id}")
 def event(session_id: str, id: str):
     """Get event details (for HTMX)"""
-    # Find session file in project directories
-    sessions = discover_sessions()
-    session_file = None
-    for session in sessions:
-        if session.session_id == session_id:
-            session_file = session.file_path
-            break
+    # Check cache first for session file path
+    cached = _session_cache.get(session_id)
+    if cached and cached.get("file_path"):
+        session_file = cached["file_path"]
+    else:
+        # Find session file in project directories
+        sessions = discover_sessions()
+        session_file = None
+        for session in sessions:
+            if session.session_id == session_id:
+                session_file = session.file_path
+                break
 
     if not session_file or not session_file.exists():
         return Div(
@@ -1754,11 +1790,8 @@ def event(session_id: str, id: str):
             cls="p-4",
         )
 
-    # Parse session and find event
-    trace_tree = parse_session_file(session_file)
-
-    # Expand subagent events with their full trace
-    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+    # Get cached or fresh session data
+    trace_tree = get_cached_session_data(session_id, session_file, session_file.parent)
 
     def find_event(events: List[TraceEvent], event_id: str) -> Optional[TraceEvent]:
         for event in events:
@@ -1791,13 +1824,18 @@ def event(session_id: str, id: str):
 @rt("/summary/{session_id}")
 def summary(session_id: str):
     """Get session summary (for HTMX)"""
-    # Find session file in project directories
-    sessions = discover_sessions()
-    session_file = None
-    for session in sessions:
-        if session.session_id == session_id:
-            session_file = session.file_path
-            break
+    # Check cache first for session file path
+    cached = _session_cache.get(session_id)
+    if cached and cached.get("file_path"):
+        session_file = cached["file_path"]
+    else:
+        # Find session file in project directories
+        sessions = discover_sessions()
+        session_file = None
+        for session in sessions:
+            if session.session_id == session_id:
+                session_file = session.file_path
+                break
 
     if not session_file or not session_file.exists():
         return Div(
@@ -1805,9 +1843,8 @@ def summary(session_id: str):
             cls="p-4",
         )
 
-    # Parse session and calculate stats
-    trace_tree = parse_session_file(session_file)
-    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+    # Get cached or fresh session data
+    trace_tree = get_cached_session_data(session_id, session_file, session_file.parent)
     session_stats = calculate_session_stats(trace_tree)
 
     return SessionSummaryPanel(session_stats)
@@ -1816,20 +1853,24 @@ def summary(session_id: str):
 @rt("/events/{session_id}/new")
 def new_events(session_id: str, after_index: int = 0):
     """Get new events since a given index (for live polling)"""
-    # Find session file
-    sessions = discover_sessions()
-    session_file = None
-    for session in sessions:
-        if session.session_id == session_id:
-            session_file = session.file_path
-            break
+    # Check cache first for session file path
+    cached = _session_cache.get(session_id)
+    if cached and cached.get("file_path"):
+        session_file = cached["file_path"]
+    else:
+        # Find session file
+        sessions = discover_sessions()
+        session_file = None
+        for session in sessions:
+            if session.session_id == session_id:
+                session_file = session.file_path
+                break
 
     if not session_file or not session_file.exists():
         return ""  # Return empty if session not found
 
-    # Parse session
-    trace_tree = parse_session_file(session_file)
-    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+    # Get cached or fresh session data (cache auto-invalidates if file changed)
+    trace_tree = get_cached_session_data(session_id, session_file, session_file.parent)
 
     current_count = len(trace_tree)
 
