@@ -585,6 +585,289 @@ def get_relative_time(dt: datetime) -> str:
         return f"{years} year{'s' if years != 1 else ''} ago"
 
 
+def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
+    """
+    Calculate session statistics from trace events.
+
+    Returns dict with:
+    - input_tokens: final event's input + cache_creation + cache_read tokens
+    - output_tokens: sum of all output tokens
+    - total_tokens: input + output
+    - active_time_seconds: sum of all step durations
+    - tool_calls: dict of tool_name -> count (main level only)
+    - subagents: list of {type, tool_calls} for each subagent
+    """
+    # Find final event with usage data for input tokens
+    final_input_tokens = 0
+    final_cache_creation = 0
+    final_cache_read = 0
+
+    # Sum of all output tokens
+    total_output_tokens = 0
+
+    # Sum of all step durations
+    total_duration_seconds = 0.0
+
+    # Track the last event with usage (for input tokens)
+    last_usage_event = None
+
+    # Track tool calls at main level (level=0)
+    main_tool_calls: Dict[str, int] = {}
+
+    # Track subagents and their tool calls
+    # We detect subagent boundaries by tracking Task tool calls
+    subagents: List[Dict[str, Any]] = []
+    current_subagent: Optional[Dict[str, Any]] = None
+
+    for idx, event in enumerate(events):
+        # Extract usage from message
+        if "message" in event.data:
+            msg = event.data["message"]
+            usage = msg.get("usage", {})
+
+            if usage:
+                last_usage_event = usage
+                # Sum output tokens from all events
+                total_output_tokens += usage.get("output_tokens", 0)
+
+        # Track tool calls
+        if event.is_tool_call():
+            tool_name = event.get_tool_name()
+
+            # Check if this is a Task (subagent) call at main level
+            if tool_name == "Task" and event.level == 0:
+                # Extract subagent type from input
+                if "message" in event.data:
+                    msg = event.data["message"]
+                    if isinstance(msg.get("content"), list):
+                        for item in msg["content"]:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "tool_use"
+                            ):
+                                input_data = item.get("input", {})
+                                subagent_type = input_data.get(
+                                    "subagent_type", "unknown"
+                                )
+                                current_subagent = {
+                                    "type": subagent_type,
+                                    "tool_calls": {},
+                                    "output_tokens": 0,
+                                    "active_time_seconds": 0.0,
+                                    "last_usage": None,
+                                }
+                                subagents.append(current_subagent)
+                                break
+
+            # Count tool calls based on level
+            if event.level == 0:
+                # Main level tool call
+                main_tool_calls[tool_name] = main_tool_calls.get(tool_name, 0) + 1
+            elif event.level > 0 and current_subagent is not None:
+                # Subagent tool call
+                current_subagent["tool_calls"][tool_name] = (
+                    current_subagent["tool_calls"].get(tool_name, 0) + 1
+                )
+
+        # Track subagent tokens
+        if event.level > 0 and current_subagent is not None:
+            if "message" in event.data:
+                msg = event.data["message"]
+                usage = msg.get("usage", {})
+                if usage:
+                    current_subagent["last_usage"] = usage
+                    current_subagent["output_tokens"] += usage.get("output_tokens", 0)
+
+        # Track subagent active time
+        if event.level > 0 and current_subagent is not None:
+            if event.event_type != "user" or event.is_tool_result():
+                previous_event = events[idx - 1] if idx > 0 else None
+                duration = event.calculate_duration(previous_event, events)
+                if duration is not None and duration > 0:
+                    current_subagent["active_time_seconds"] += duration
+
+        # Reset current_subagent when we see a subagent tool result at level > 0
+        # that transitions back to level 0
+        if event.is_subagent_tool_result() and event.level > 0:
+            # Finalize subagent input tokens from last usage
+            if current_subagent and current_subagent.get("last_usage"):
+                last = current_subagent["last_usage"]
+                current_subagent["input_tokens"] = (
+                    last.get("input_tokens", 0)
+                    + last.get("cache_creation_input_tokens", 0)
+                    + last.get("cache_read_input_tokens", 0)
+                )
+            current_subagent = None
+
+        # Calculate duration for this event
+        # Only count assistant, system, and tool_result events (not user messages)
+        # tool_result has event_type "user" but is_tool_result() returns True
+        if event.event_type != "user" or event.is_tool_result():
+            previous_event = events[idx - 1] if idx > 0 else None
+            duration = event.calculate_duration(previous_event, events)
+            if duration is not None and duration > 0:
+                total_duration_seconds += duration
+
+    # Get input tokens from the final usage event
+    if last_usage_event:
+        final_input_tokens = last_usage_event.get("input_tokens", 0)
+        final_cache_creation = last_usage_event.get("cache_creation_input_tokens", 0)
+        final_cache_read = last_usage_event.get("cache_read_input_tokens", 0)
+
+    total_input = final_input_tokens + final_cache_creation + final_cache_read
+    total_tokens = total_input + total_output_tokens
+
+    return {
+        "input_tokens": total_input,
+        "output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+        "active_time_seconds": total_duration_seconds,
+        "tool_calls": main_tool_calls,
+        "subagents": subagents,
+    }
+
+
+def format_duration(seconds: float) -> str:
+    """Format seconds as Xm Ys or Xs"""
+    if seconds >= 60:
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        return f"{minutes}m {secs:.1f}s"
+    else:
+        return f"{seconds:.2f}s"
+
+
+def SessionSummaryNode(session_id: str):
+    """Session summary node for the trace tree (first item)"""
+    return Div(
+        Div(
+            Span("summary", cls="text-xs text-cyan-500"),
+            cls="flex justify-between",
+        ),
+        Span("Session Summary"),
+        cls="trace-event",
+        hx_get=f"/summary/{session_id}",
+        hx_target="#detail-panel",
+        id="node-summary",
+    )
+
+
+def SessionSummaryPanel(stats: Dict[str, Any]):
+    """Session summary detail panel showing tokens, time, tools, and subagents"""
+    components = []
+
+    # Token and time stats
+    components.append(H4("Tokens & Time", cls="mb-2 font-bold"))
+    components.append(
+        Div(
+            Div(
+                Span("Input Tokens: ", cls="text-gray-400"),
+                Span(f"{stats['input_tokens']:,}", cls="text-white font-medium"),
+                cls="mb-2",
+            ),
+            Div(
+                Span("Output Tokens: ", cls="text-gray-400"),
+                Span(f"{stats['output_tokens']:,}", cls="text-white font-medium"),
+                cls="mb-2",
+            ),
+            Div(
+                Span("Total Tokens: ", cls="text-gray-400"),
+                Span(f"{stats['total_tokens']:,}", cls="text-white font-bold"),
+                cls="mb-2",
+            ),
+            Div(
+                Span("Active Time: ", cls="text-gray-400"),
+                Span(
+                    format_duration(stats["active_time_seconds"]),
+                    cls="text-white font-medium",
+                ),
+            ),
+            cls="p-3 bg-gray-900 rounded mb-4",
+        )
+    )
+
+    # Main level tool calls
+    tool_calls = stats.get("tool_calls", {})
+    if tool_calls:
+        components.append(H4("Tool Calls (Main)", cls="mb-2 font-bold mt-4"))
+        tool_items = []
+        # Sort by count descending
+        for tool_name, count in sorted(
+            tool_calls.items(), key=lambda x: x[1], reverse=True
+        ):
+            tool_items.append(
+                Div(
+                    Span(tool_name, cls="text-yellow-500"),
+                    Span(f" × {count}", cls="text-gray-400"),
+                    cls="mb-1",
+                )
+            )
+        components.append(Div(*tool_items, cls="p-3 bg-gray-900 rounded mb-4"))
+
+    # Subagents
+    subagents = stats.get("subagents", [])
+    if subagents:
+        components.append(H4("Subagents", cls="mb-2 font-bold mt-4"))
+        for i, subagent in enumerate(subagents):
+            subagent_type = subagent.get("type", "unknown")
+            subagent_tools = subagent.get("tool_calls", {})
+            subagent_input = subagent.get("input_tokens", 0)
+            subagent_output = subagent.get("output_tokens", 0)
+            subagent_total = subagent_input + subagent_output
+            subagent_time = subagent.get("active_time_seconds", 0.0)
+
+            # Subagent header
+            subagent_content = [
+                Div(
+                    Span(f"{i + 1}. ", cls="text-gray-500"),
+                    Span(subagent_type, cls="text-cyan-500 font-medium"),
+                    cls="mb-2",
+                )
+            ]
+
+            # Subagent tokens and time
+            subagent_content.append(
+                Div(
+                    Span("Input: ", cls="text-gray-500"),
+                    Span(f"{subagent_input:,}", cls="text-white"),
+                    Span("  Output: ", cls="text-gray-500"),
+                    Span(f"{subagent_output:,}", cls="text-white"),
+                    Span("  Total: ", cls="text-gray-500"),
+                    Span(f"{subagent_total:,}", cls="text-white font-medium"),
+                    Span("  Time: ", cls="text-gray-500"),
+                    Span(format_duration(subagent_time), cls="text-white"),
+                    cls="ml-4 mb-2 text-sm",
+                )
+            )
+
+            # Subagent tool calls
+            if subagent_tools:
+                tool_list = []
+                for tool_name, count in sorted(
+                    subagent_tools.items(), key=lambda x: x[1], reverse=True
+                ):
+                    tool_list.append(
+                        Span(
+                            Span(tool_name, cls="text-yellow-500"),
+                            Span(f" × {count}", cls="text-gray-500"),
+                            cls="mr-4",
+                        )
+                    )
+                subagent_content.append(
+                    Div(*tool_list, cls="ml-4 flex flex-wrap gap-2")
+                )
+            else:
+                subagent_content.append(
+                    Div("No tool calls", cls="ml-4 text-gray-500 text-sm")
+                )
+
+            components.append(
+                Div(*subagent_content, cls="p-3 bg-gray-900 rounded mb-2")
+            )
+
+    return Div(*components)
+
+
 # UI Components
 def ProjectAccordion(project_name: str, sessions: List[Session]):
     """Accordion item for a project with its sessions"""
@@ -1186,7 +1469,8 @@ def viewer(session_id: str):
     trace_tree = expand_subagent_events(trace_tree, session_file.parent)
 
     # Create tree nodes with previous event context for duration calculation
-    tree_nodes = []
+    # Start with summary node as first item
+    tree_nodes = [SessionSummaryNode(session_id)]
     for idx, event in enumerate(trace_tree):
         previous_event = trace_tree[idx - 1] if idx > 0 else None
         tree_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
@@ -1284,6 +1568,31 @@ def event(session_id: str, id: str):
             break
 
     return DetailPanel(found_event, trace_tree, previous_event)
+
+
+@rt("/summary/{session_id}")
+def summary(session_id: str):
+    """Get session summary (for HTMX)"""
+    # Find session file in project directories
+    sessions = discover_sessions()
+    session_file = None
+    for session in sessions:
+        if session.session_id == session_id:
+            session_file = session.file_path
+            break
+
+    if not session_file or not session_file.exists():
+        return Div(
+            P("Session file not found", cls=TextT.muted),
+            cls="p-4",
+        )
+
+    # Parse session and calculate stats
+    trace_tree = parse_session_file(session_file)
+    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+    session_stats = calculate_session_stats(trace_tree)
+
+    return SessionSummaryPanel(session_stats)
 
 
 # Start server
