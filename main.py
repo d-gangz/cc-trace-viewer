@@ -1691,14 +1691,25 @@ def viewer(session_id: str):
                 Div(
                     # Left panel - Trace tree (30% width)
                     Div(
+                        # Hidden input to track event count for live polling
+                        Input(
+                            type="hidden",
+                            id="event-count",
+                            value=str(len(trace_tree)),
+                        ),
                         Div(
                             *(
                                 tree_nodes
                                 if tree_nodes
                                 else [P("No trace events found", cls=TextT.muted)]
                             ),
+                            id="trace-tree-container",
                             cls="overflow-auto",
                             style="max-height: 75vh;",
+                            hx_get=f"/events/{session_id}/new",
+                            hx_trigger="every 5s",
+                            hx_swap="beforeend",
+                            hx_vals="js:{after_index: parseInt(document.getElementById('event-count').value)}",
                         ),
                         cls="p-4",
                         style="width: 30%; border-right: 1px solid var(--uk-border-default); height: 75vh;",
@@ -1798,6 +1809,48 @@ def summary(session_id: str):
     session_stats = calculate_session_stats(trace_tree)
 
     return SessionSummaryPanel(session_stats)
+
+
+@rt("/events/{session_id}/new")
+def new_events(session_id: str, after_index: int = 0):
+    """Get new events since a given index (for live polling)"""
+    # Find session file
+    sessions = discover_sessions()
+    session_file = None
+    for session in sessions:
+        if session.session_id == session_id:
+            session_file = session.file_path
+            break
+
+    if not session_file or not session_file.exists():
+        return ""  # Return empty if session not found
+
+    # Parse session
+    trace_tree = parse_session_file(session_file)
+    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+
+    current_count = len(trace_tree)
+
+    # No new events
+    if current_count <= after_index:
+        return ""
+
+    # Get only new events (after the index)
+    new_event_list = trace_tree[after_index:]
+
+    # Build new tree nodes
+    new_nodes = []
+    for idx, event in enumerate(new_event_list):
+        # Calculate absolute index for previous event lookup
+        abs_idx = after_index + idx
+        previous_event = trace_tree[abs_idx - 1] if abs_idx > 0 else None
+        new_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
+
+    # Return new nodes + update the event count tracker
+    return Div(
+        *new_nodes,
+        Script(f"document.getElementById('event-count').value = {current_count};"),
+    )
 
 
 # Start server
