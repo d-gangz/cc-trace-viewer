@@ -1623,7 +1623,67 @@ def viewer(session_id: str):
     return Layout(
         Div(
             DivFullySpaced(
-                H4(f"Session: {session_id}", cls="uk-h4"),
+                Div(
+                    H4(f"Session: {session_id}", cls="uk-h4", style="display: inline;"),
+                    Button(
+                        UkIcon("copy", height=16, width=16, cls="copy-icon"),
+                        UkIcon(
+                            "check",
+                            height=16,
+                            width=16,
+                            cls="check-icon",
+                            style="display: none; color: #22c55e;",
+                        ),
+                        Span("Copied!", cls="copy-tooltip"),
+                        cls="copy-btn",
+                        type="button",
+                        style="width: 32px; height: 32px; padding: 0; margin-left: 8px; vertical-align: middle; background: transparent; border: 1px solid #444; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; position: relative;",
+                        onclick=f"copySessionId(event, '{session_id}')",
+                    ),
+                    Script("""
+                        function copySessionId(event, sessionId) {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const btn = event.currentTarget;
+                            navigator.clipboard.writeText(sessionId).then(() => {
+                                const copyIcon = btn.querySelector('.copy-icon');
+                                const checkIcon = btn.querySelector('.check-icon');
+                                const tooltip = btn.querySelector('.copy-tooltip');
+
+                                copyIcon.style.display = 'none';
+                                checkIcon.style.display = 'block';
+                                tooltip.style.opacity = '1';
+                                tooltip.style.visibility = 'visible';
+
+                                setTimeout(() => {
+                                    copyIcon.style.display = 'block';
+                                    checkIcon.style.display = 'none';
+                                    tooltip.style.opacity = '0';
+                                    tooltip.style.visibility = 'hidden';
+                                }, 1500);
+                            });
+                        }
+                    """),
+                    Style("""
+                        .copy-btn:hover { background: #333 !important; }
+                        .copy-tooltip {
+                            position: absolute;
+                            top: -32px;
+                            left: 50%;
+                            transform: translateX(-50%);
+                            background: #1f2937;
+                            color: white;
+                            padding: 4px 8px;
+                            border-radius: 4px;
+                            font-size: 12px;
+                            white-space: nowrap;
+                            opacity: 0;
+                            visibility: hidden;
+                            transition: opacity 0.2s;
+                        }
+                    """),
+                    style="display: flex; align-items: center;",
+                ),
                 Span(project_name, cls="text-gray-500 font-normal"),
             ),
             # Combined panel with single border - using CardContainer directly
