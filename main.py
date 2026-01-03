@@ -218,6 +218,16 @@ class TraceEvent:
                         return item.get("thinking", "")
         return ""
 
+    def is_subagent_tool_result(self) -> bool:
+        """Check if this is a tool result from a subagent (Task tool)"""
+        if not self.is_tool_result():
+            return False
+        # Check if toolUseResult has an agentId (indicates subagent)
+        tool_use_result = self.data.get("toolUseResult")
+        if isinstance(tool_use_result, dict):
+            return "agentId" in tool_use_result
+        return False
+
     def calculate_duration(
         self, previous_event: Optional["TraceEvent"], all_events: List["TraceEvent"]
     ) -> Optional[float]:
@@ -225,7 +235,9 @@ class TraceEvent:
         Calculate duration in seconds for this event.
 
         For thinking/assistant/tool_call: duration = this.timestamp - previous.timestamp
-        For tool_result: duration = this.timestamp - matching_tool_use.timestamp
+        For subagent tool_result: duration = this.timestamp - previous.timestamp
+            (since subagent events are expanded inline, use previous event timing)
+        For regular tool_result: duration = this.timestamp - matching_tool_use.timestamp
 
         Returns duration in seconds or None if cannot calculate
         """
@@ -235,8 +247,19 @@ class TraceEvent:
         except Exception:
             return None
 
-        # For tool results, find the matching tool_use event
+        # For tool results, check if it's a subagent result
         if self.is_tool_result():
+            # For subagent tool results, use previous event timestamp
+            # (since subagent events are expanded inline before this result)
+            if self.is_subagent_tool_result() and previous_event:
+                try:
+                    previous_time = date_parser.parse(previous_event.timestamp)
+                    duration = (current_time - previous_time).total_seconds()
+                    return duration
+                except Exception:
+                    return None
+
+            # For regular tool results, find the matching tool_use event
             tool_use_id = self.get_tool_use_id()
             if tool_use_id and all_events:
                 # Find the tool_use event with matching ID
