@@ -6,9 +6,6 @@ A web viewer for Claude Code session traces from `~/.claude/projects/`.
 
 - **Install**: `uv sync`
 - **Run**: `uv run python main.py` (opens http://localhost:5002)
-- **Lint**: `uvx ruff check main.py`
-- **Format**: `uvx black main.py`
-- **Type check**: `uvx mypy main.py`
 
 ## Project Structure
 
@@ -43,4 +40,3 @@ Session files contain JSONL with all turns, tool calls, and responses - useful f
 
 - Use `uv` for package management (never pip directly)
 - Keep all application code in `main.py` - only split for massive benefit
-- Ruff ignores: F403, F405, F841 (configured in pyproject.toml)
