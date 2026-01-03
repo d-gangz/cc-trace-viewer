@@ -875,6 +875,7 @@ def SessionSummaryNode(session_id: str):
         cls="trace-event",
         hx_get=f"/summary/{session_id}",
         hx_target="#detail-panel",
+        hx_swap="innerHTML",
         id="node-summary",
     )
 
@@ -1186,6 +1187,7 @@ def TraceTreeNode(
         style=indent_style if indent_style else None,
         hx_get=f"/event/{session_id}/{event.id}",
         hx_target="#detail-panel",
+        hx_swap="innerHTML",
         id=node_id,
     )
 
