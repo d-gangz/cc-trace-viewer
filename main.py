@@ -511,38 +511,70 @@ def expand_subagent_events(
 
     Finds Task tool results with agentId in toolUseResult, loads the corresponding
     agent-{agentId}.jsonl file, and inserts those events before the tool result.
+
+    Handles two cases:
+    1. Resumed agents (same agentId): Only loads agent file on first occurrence
+    2. Replayed events (context compaction): Skips duplicate tool_use_ids entirely
     """
     expanded = []
 
-    # Build a map of tool_use_id -> agentId from tool results
+    # Build a map of tool_use_id -> agentId from tool results (first occurrence only)
     tool_to_agent = {}
+    seen_tool_ids: set = set()
     for event in events:
         if event.is_tool_result():
             tool_use_result = event.data.get("toolUseResult")
             if isinstance(tool_use_result, dict):
                 agent_id = tool_use_result.get("agentId")
                 tool_use_id = event.get_tool_use_id()
-                if agent_id and tool_use_id:
+                if agent_id and tool_use_id and tool_use_id not in tool_to_agent:
                     tool_to_agent[tool_use_id] = agent_id
 
-    # Track which tool results have agent traces to indent them
-    tool_results_with_agents = set(tool_to_agent.keys())
+    # Track which agent IDs have already been loaded
+    loaded_agents: set = set()
+    # Track which tool_use_ids we've already processed (to skip replayed events)
+    processed_tool_ids: set = set()
 
     for event in events:
+        # Check if this is a Task tool call that we've already seen (replayed event)
+        skip_event = False
+        if event.is_tool_call() and event.get_tool_name() == "Task":
+            msg = event.data.get("message", {})
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_id = item.get("id")
+                        if tool_id and tool_id in processed_tool_ids:
+                            # Skip this replayed Task tool call
+                            skip_event = True
+                            break
+
+        if skip_event:
+            continue
+
         # Check if this is a tool result for a subagent
         if event.is_tool_result():
             tool_use_id = event.get_tool_use_id()
             if tool_use_id in tool_to_agent:
+                # Skip replayed tool results
+                if tool_use_id in processed_tool_ids:
+                    continue
+
                 agent_id = tool_to_agent[tool_use_id]
                 agent_file = session_dir / f"agent-{agent_id}.jsonl"
 
-                if agent_file.exists():
+                # Only load agent file if not already loaded
+                if agent_file.exists() and agent_id not in loaded_agents:
                     # Parse agent events and insert them before the tool result
                     agent_events = parse_agent_file(agent_file, level=1)
                     expanded.extend(agent_events)
+                    loaded_agents.add(agent_id)
 
                 # Indent the tool result to match the agent events
                 event.level = 1
+                # Mark this tool_use_id as processed
+                processed_tool_ids.add(tool_use_id)
 
         expanded.append(event)
 
@@ -671,10 +703,11 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
     # Track tool calls at main level (level=0)
     main_tool_calls: Dict[str, int] = {}
 
-    # Track subagents and their tool calls
-    # We detect subagent boundaries by tracking Task tool calls
-    subagents: List[Dict[str, Any]] = []
+    # Track subagents by agentId (to handle resumed agents correctly)
+    # Key: agentId, Value: subagent stats dict
+    subagent_by_id: Dict[str, Dict[str, Any]] = {}
     current_subagent: Optional[Dict[str, Any]] = None
+    current_agent_id: Optional[str] = None
 
     for idx, event in enumerate(events):
         # Extract usage from message
@@ -712,8 +745,10 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
                                     "output_tokens": 0,
                                     "active_time_seconds": 0.0,
                                     "last_usage": None,
+                                    "first_timestamp": None,
+                                    "last_timestamp": None,
                                 }
-                                subagents.append(current_subagent)
+                                # Will be added to subagent_by_id when we see the tool result
                                 break
 
             # Count tool calls based on level
@@ -726,34 +761,69 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
                     current_subagent["tool_calls"].get(tool_name, 0) + 1
                 )
 
-        # Track subagent tokens
+        # Track subagent last_usage (for fallback, but prefer toolUseResult.usage)
         if event.level > 0 and current_subagent is not None:
             if "message" in event.data:
                 msg = event.data["message"]
                 usage = msg.get("usage", {})
                 if usage:
                     current_subagent["last_usage"] = usage
-                    current_subagent["output_tokens"] += usage.get("output_tokens", 0)
 
-        # Track subagent active time
+        # Track subagent timestamps for wall-clock time calculation
         if event.level > 0 and current_subagent is not None:
-            if event.event_type != "user" or event.is_tool_result():
-                previous_event = events[idx - 1] if idx > 0 else None
-                duration = event.calculate_duration(previous_event, events)
-                if duration is not None and duration > 0:
-                    current_subagent["active_time_seconds"] += duration
+            if event.timestamp:
+                # Track first timestamp
+                if current_subagent["first_timestamp"] is None:
+                    current_subagent["first_timestamp"] = event.timestamp
+                # Always update last timestamp
+                current_subagent["last_timestamp"] = event.timestamp
 
         # Reset current_subagent when we see a subagent tool result at level > 0
         # that transitions back to level 0
         if event.is_subagent_tool_result() and event.level > 0:
-            # Finalize subagent input tokens from last usage
-            if current_subagent and current_subagent.get("last_usage"):
+            # Get agentId and usage from toolUseResult
+            tool_use_result = event.data.get("toolUseResult")
+            agent_id = None
+            tr_usage = None
+            if isinstance(tool_use_result, dict):
+                agent_id = tool_use_result.get("agentId")
+                tr_usage = tool_use_result.get("usage", {})
+
+            # Finalize subagent tokens from toolUseResult.usage (accurate totals)
+            if current_subagent and tr_usage:
+                current_subagent["input_tokens"] = (
+                    tr_usage.get("input_tokens", 0)
+                    + tr_usage.get("cache_creation_input_tokens", 0)
+                    + tr_usage.get("cache_read_input_tokens", 0)
+                )
+                current_subagent["output_tokens"] = tr_usage.get("output_tokens", 0)
+            # Fallback to last_usage if toolUseResult.usage not available
+            elif current_subagent and current_subagent.get("last_usage"):
                 last = current_subagent["last_usage"]
                 current_subagent["input_tokens"] = (
                     last.get("input_tokens", 0)
                     + last.get("cache_creation_input_tokens", 0)
                     + last.get("cache_read_input_tokens", 0)
                 )
+                current_subagent["output_tokens"] = last.get("output_tokens", 0)
+            # Calculate active time as wall-clock time (first to last timestamp)
+            if current_subagent:
+                first_ts = current_subagent.get("first_timestamp")
+                last_ts = current_subagent.get("last_timestamp")
+                if first_ts and last_ts:
+                    try:
+                        first_time = date_parser.parse(first_ts)
+                        last_time = date_parser.parse(last_ts)
+                        current_subagent["active_time_seconds"] = (
+                            last_time - first_time
+                        ).total_seconds()
+                    except Exception:
+                        pass
+
+            # Add to subagent_by_id (only if not already present - handles resumed agents)
+            if current_subagent and agent_id and agent_id not in subagent_by_id:
+                subagent_by_id[agent_id] = current_subagent
+
             current_subagent = None
 
         # Calculate duration for this event
@@ -780,7 +850,7 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
         "total_tokens": total_tokens,
         "active_time_seconds": total_duration_seconds,
         "tool_calls": main_tool_calls,
-        "subagents": subagents,
+        "subagents": list(subagent_by_id.values()),
     }
 
 
