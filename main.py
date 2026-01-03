@@ -369,6 +369,10 @@ def discover_sessions() -> List[Session]:
         for session_file in project_dir.glob("*.jsonl"):
             session_id = session_file.stem
 
+            # Skip agent sessions (they're shown within parent sessions)
+            if session_id.startswith("agent-"):
+                continue
+
             # Parse file to get last timestamp (most recent activity)
             try:
                 created_at = None
@@ -543,6 +547,59 @@ def expand_subagent_events(
         expanded.append(event)
 
     return expanded
+
+
+def get_session_quick_stats(file_path: Path) -> Dict[str, Any]:
+    """Get quick stats for a session without expanding subagents.
+
+    Returns dict with input_tokens, output_tokens, total_tokens, active_time_seconds.
+    """
+    events = parse_session_file(file_path)
+    if not events:
+        return {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "active_time_seconds": 0.0,
+        }
+
+    # Find final event with usage data for input tokens
+    last_usage_event = None
+    total_output_tokens = 0
+    total_duration_seconds = 0.0
+
+    for idx, event in enumerate(events):
+        # Extract usage from message
+        if "message" in event.data:
+            msg = event.data["message"]
+            usage = msg.get("usage", {})
+
+            if usage:
+                last_usage_event = usage
+                total_output_tokens += usage.get("output_tokens", 0)
+
+        # Calculate duration for non-user events
+        if event.event_type != "user" or event.is_tool_result():
+            previous_event = events[idx - 1] if idx > 0 else None
+            duration = event.calculate_duration(previous_event, events)
+            if duration is not None and duration > 0:
+                total_duration_seconds += duration
+
+    # Get input tokens from the final usage event
+    total_input = 0
+    if last_usage_event:
+        total_input = (
+            last_usage_event.get("input_tokens", 0)
+            + last_usage_event.get("cache_creation_input_tokens", 0)
+            + last_usage_event.get("cache_read_input_tokens", 0)
+        )
+
+    return {
+        "input_tokens": total_input,
+        "output_tokens": total_output_tokens,
+        "total_tokens": total_input + total_output_tokens,
+        "active_time_seconds": total_duration_seconds,
+    }
 
 
 def group_sessions_by_project(sessions: List[Session]) -> Dict[str, List[Session]]:
@@ -874,12 +931,30 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
     session_items = []
     for session in sessions:
         relative_time = get_relative_time(session.created_at)
+        # Get quick stats for the session
+        stats = get_session_quick_stats(session.file_path)
+
+        # Format stats for display
+        input_k = stats["input_tokens"] / 1000
+        output_k = stats["output_tokens"] / 1000
+        total_k = stats["total_tokens"] / 1000
+        active_time = format_duration(stats["active_time_seconds"])
+
         session_items.append(
             Li(
                 A(
-                    DivFullySpaced(
-                        Span(session.session_id, cls=TextT.bold),
-                        Span(relative_time, cls="text-gray-500 font-normal"),
+                    Div(
+                        DivFullySpaced(
+                            Span(session.session_id, cls=TextT.bold),
+                            Span(relative_time, cls="text-gray-500 font-normal"),
+                        ),
+                        Div(
+                            Span(f"In: {input_k:.1f}k", cls="text-gray-400 mr-3"),
+                            Span(f"Out: {output_k:.1f}k", cls="text-gray-400 mr-3"),
+                            Span(f"Total: {total_k:.1f}k", cls="text-gray-400 mr-3"),
+                            Span(f"Time: {active_time}", cls="text-gray-400"),
+                            cls="text-sm mt-1",
+                        ),
                     ),
                     href=f"/viewer/{session.session_id}",
                     cls="hover:bg-gray-800 p-2 rounded block",
