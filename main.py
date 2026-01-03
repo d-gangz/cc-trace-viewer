@@ -21,14 +21,15 @@ The app will automatically:
 - Convert UTC timestamps to local timezone for accurate relative time display
 """
 
-from fasthtml.common import *
-from monsterui.all import *
-from pathlib import Path
-from datetime import datetime
-from dateutil import parser as date_parser
 import json
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from dateutil import parser as date_parser
+from fasthtml.common import *
+from monsterui.all import *
 
 # App setup
 custom_css = Style(
@@ -68,6 +69,20 @@ custom_css = Style(
 
     .trace-event-sidechain.selected {
         border-left-color: rgb(59, 130, 246);
+    }
+
+    .trace-event-nested {
+        padding-left: 12px;
+        background-color: rgba(55, 65, 81, 0.3);
+        border-radius: 0;
+    }
+
+    .trace-event-nested:hover {
+        background-color: rgba(55, 65, 81, 0.5);
+    }
+
+    .trace-event-nested.selected {
+        background-color: rgba(55, 65, 81, 0.6);
     }
 """
 )
@@ -126,7 +141,7 @@ selection_script = Script(
 """
 )
 
-app, rt = fast_app(hdrs=[*Theme.blue.headers(), custom_css, selection_script])
+app, rt = fast_app(hdrs=(*Theme.blue.headers(), custom_css, selection_script))
 
 
 # Data models
@@ -384,6 +399,11 @@ def parse_session_file(file_path: Path) -> List[TraceEvent]:
 
             try:
                 data = json.loads(line)
+
+                # Skip internal bookkeeping events
+                if data.get("type") == "file-history-snapshot":
+                    continue
+
                 event = TraceEvent(
                     id=data.get("uuid", str(idx)),
                     event_type=data.get("type", "unknown"),
@@ -400,6 +420,106 @@ def parse_session_file(file_path: Path) -> List[TraceEvent]:
     # Return as flat list (no tree structure for conversation view)
     # All events at level 0
     return events
+
+
+def parse_agent_file(file_path: Path, level: int = 1) -> List[TraceEvent]:
+    """Parse agent JSONL file and return events with specified indent level.
+    Returns empty list if file is a warmup agent.
+    """
+    events = []
+
+    try:
+        with open(file_path, "r") as f:
+            lines = f.readlines()
+    except Exception:
+        return []
+
+    # Check if this is a warmup agent (first user message content is "Warmup")
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            data = json.loads(line)
+            if data.get("type") == "user":
+                msg = data.get("message", {})
+                content = msg.get("content", "")
+                if isinstance(content, str) and content.strip() == "Warmup":
+                    return []  # Skip warmup agents
+                break  # Found first user message, not warmup
+        except Exception:
+            continue
+
+    # Parse all events with the specified level
+    for idx, line in enumerate(lines):
+        if not line.strip():
+            continue
+
+        try:
+            data = json.loads(line)
+
+            # Skip internal bookkeeping events
+            if data.get("type") == "file-history-snapshot":
+                continue
+
+            event = TraceEvent(
+                id=data.get("uuid", f"agent-{idx}"),
+                event_type=data.get("type", "unknown"),
+                timestamp=data.get("timestamp", ""),
+                data=data,
+                parent_id=data.get("parentUuid"),
+                is_sidechain=data.get("isSidechain", False),
+                level=level,
+            )
+            events.append(event)
+        except Exception:
+            continue
+
+    return events
+
+
+def expand_subagent_events(
+    events: List[TraceEvent], session_dir: Path
+) -> List[TraceEvent]:
+    """Expand subagent tool calls with their agent trace events.
+
+    Finds Task tool results with agentId in toolUseResult, loads the corresponding
+    agent-{agentId}.jsonl file, and inserts those events before the tool result.
+    """
+    expanded = []
+
+    # Build a map of tool_use_id -> agentId from tool results
+    tool_to_agent = {}
+    for event in events:
+        if event.is_tool_result():
+            tool_use_result = event.data.get("toolUseResult")
+            if isinstance(tool_use_result, dict):
+                agent_id = tool_use_result.get("agentId")
+                tool_use_id = event.get_tool_use_id()
+                if agent_id and tool_use_id:
+                    tool_to_agent[tool_use_id] = agent_id
+
+    # Track which tool results have agent traces to indent them
+    tool_results_with_agents = set(tool_to_agent.keys())
+
+    for event in events:
+        # Check if this is a tool result for a subagent
+        if event.is_tool_result():
+            tool_use_id = event.get_tool_use_id()
+            if tool_use_id in tool_to_agent:
+                agent_id = tool_to_agent[tool_use_id]
+                agent_file = session_dir / f"agent-{agent_id}.jsonl"
+
+                if agent_file.exists():
+                    # Parse agent events and insert them before the tool result
+                    agent_events = parse_agent_file(agent_file, level=1)
+                    expanded.extend(agent_events)
+
+                # Indent the tool result to match the agent events
+                event.level = 1
+
+        expanded.append(event)
+
+    return expanded
 
 
 def group_sessions_by_project(sessions: List[Session]) -> Dict[str, List[Session]]:
@@ -601,10 +721,18 @@ def TraceTreeNode(
     if event.is_sidechain:
         css_classes += " trace-event-sidechain"
 
+    # Apply indentation for nested events (subagent traces)
+    indent_style = ""
+    if event.level > 0:
+        indent_px = event.level * 20  # 20px per level
+        indent_style = f"margin-left: {indent_px}px; border-left: 2px solid #374151;"
+        css_classes += " trace-event-nested"
+
     return Div(
         Div(*eyebrow_content, cls="flex justify-between"),
         Span(display_text),
         cls=css_classes,
+        style=indent_style if indent_style else None,
         hx_get=f"/event/{session_id}/{event.id}",
         hx_target="#detail-panel",
         id=node_id,
@@ -1031,6 +1159,9 @@ def viewer(session_id: str):
 
     trace_tree = parse_session_file(session_file)
 
+    # Expand subagent events with their full trace
+    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+
     # Create tree nodes with previous event context for duration calculation
     tree_nodes = []
     for idx, event in enumerate(trace_tree):
@@ -1101,6 +1232,9 @@ def event(session_id: str, id: str):
     # Parse session and find event
     trace_tree = parse_session_file(session_file)
 
+    # Expand subagent events with their full trace
+    trace_tree = expand_subagent_events(trace_tree, session_file.parent)
+
     def find_event(events: List[TraceEvent], event_id: str) -> Optional[TraceEvent]:
         for event in events:
             if event.id == event_id:
@@ -1130,4 +1264,4 @@ def event(session_id: str, id: str):
 
 
 # Start server
-serve()
+serve(port=5002)
