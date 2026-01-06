@@ -193,6 +193,9 @@ class TraceEvent:
     agent_id: Optional[str] = (
         None  # agentId this event belongs to (for subagent events)
     )
+    _render_tool_index: Optional[int] = (
+        None  # For synthetic events: which tool_use index to render
+    )
 
     def is_tool_call(self) -> bool:
         """Check if this event is a tool call"""
@@ -545,29 +548,27 @@ def expand_subagent_events(
 ) -> List[TraceEvent]:
     """Expand subagent tool calls with their agent trace events.
 
-    Finds Task tool results with agentId in toolUseResult, loads the corresponding
-    agent-{agentId}.jsonl file, and inserts those events before the tool result.
+    Finds Task tool calls and immediately inserts the corresponding agent events
+    after the Task call. This groups each subagent's steps with its invocation,
+    making it clear which steps belong to which subagent.
 
     Handles multiple cases:
     1. Resumed agents (same agentId): Only loads agent file on first occurrence
     2. Replayed events (context compaction): Skips duplicate tool_use_ids entirely
-    3. Messages with multiple tool_use (Task + other): Processes all, defers only Task
-    4. Out-of-order events (tool_result before tool_use): Proper positioning
-
-    For out-of-order events, ensures the Task tool_use is positioned right before
-    the subagent events for proper visual ordering.
+    3. Messages with multiple tool_use (Task + other): Splits and processes each
+    4. Multiple parallel subagents: Each subagent's events grouped with its call
     """
     expanded = []
 
-    # Build maps from tool results and tool uses (first occurrence only)
+    # First pass: Build maps from tool results (to get agentId for each tool_use_id)
     # tool_use_id -> agentId
     tool_to_agent: Dict[str, str] = {}
-    # tool_use_id -> Task tool_use event (for out-of-order handling)
-    tool_to_use_event: Dict[str, TraceEvent] = {}
     # Track first occurrence of each tool_use_id (by event UUID)
     first_tool_use_event: Dict[str, str] = {}  # tool_use_id -> event UUID
     # Track first occurrence of each tool_result tool_use_id (by event UUID)
     first_tool_result_event: Dict[str, str] = {}  # tool_use_id -> event UUID
+    # Map tool_use_id -> tool_result event (for Task results, to insert with agent events)
+    task_tool_results: Dict[str, TraceEvent] = {}  # tool_use_id -> event
 
     for event in events:
         # Map tool_use_id -> agentId from tool results
@@ -578,13 +579,15 @@ def expand_subagent_events(
                 tool_use_id = event.get_tool_use_id()
                 if agent_id and tool_use_id and tool_use_id not in tool_to_agent:
                     tool_to_agent[tool_use_id] = agent_id
+                    # Store the tool_result event for later insertion with agent events
+                    task_tool_results[tool_use_id] = event
 
             # Track first occurrence of tool_result
             tool_use_id = event.get_tool_use_id()
             if tool_use_id and tool_use_id not in first_tool_result_event:
                 first_tool_result_event[tool_use_id] = event.id
 
-        # Track first occurrence of any tool_use_id and map Task tool_uses
+        # Track first occurrence of any tool_use_id
         if event.is_tool_call():
             msg = event.data.get("message", {})
             content = msg.get("content", [])
@@ -592,27 +595,15 @@ def expand_subagent_events(
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "tool_use":
                         tool_id = item.get("id")
-                        tool_name = item.get("name", "")
-                        if tool_id:
-                            # Track first occurrence of any tool_use_id
-                            if tool_id not in first_tool_use_event:
-                                first_tool_use_event[tool_id] = event.id
-                            # Map Task tool_use_id to event
-                            if tool_name == "Task" and tool_id not in tool_to_use_event:
-                                tool_to_use_event[tool_id] = event
+                        if tool_id and tool_id not in first_tool_use_event:
+                            first_tool_use_event[tool_id] = event.id
 
     # Track which agent IDs have already been loaded
     loaded_agents: set = set()
-    # Track which Task tool_use_ids we've output (to skip duplicates)
-    output_task_tool_ids: set = set()
+    # Track which tool_use_ids we've output (for deduplication)
+    output_tool_use_ids: set = set()
     # Track which tool_result tool_use_ids we've processed (to skip duplicates)
     processed_result_ids: set = set()
-    # Track ALL tool_use_ids we've output (for general deduplication)
-    output_tool_use_ids: set = set()
-    # Map non-Task tool_use_id -> deferred event (for events with mixed Task + other tools)
-    deferred_event_by_tool_id: Dict[str, TraceEvent] = {}
-    # Track which deferred events we've already output
-    output_deferred_events: set = set()
 
     for event in events:
         # Check if this event only contains already-processed tool content
@@ -649,90 +640,95 @@ def expand_subagent_events(
                 if first_tool_result_event.get(tool_use_id) != event.id:
                     continue
 
-        # Check if this contains Task tool_use - DEFER adding it
+        # Handle tool_call events - split Tasks into separate events for proper grouping
         if event.is_tool_call():
             msg = event.data.get("message", {})
             content = msg.get("content", [])
-            task_tool_ids = []
-            other_tool_ids = []
+
+            # Separate Task tool_uses from other tool_uses
+            task_items = []  # [(index, item, tool_id), ...]
+            other_items = []  # [(index, item), ...]
 
             if isinstance(content, list):
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "tool_use":
-                        tool_id = item.get("id")
-                        tool_name = item.get("name", "")
-                        if tool_name == "Task":
-                            task_tool_ids.append(tool_id)
+                for idx, item in enumerate(content):
+                    if isinstance(item, dict):
+                        if item.get("type") == "tool_use":
+                            tool_id = item.get("id")
+                            tool_name = item.get("name", "")
+                            if tool_id:
+                                output_tool_use_ids.add(tool_id)
+                            if tool_name == "Task" and tool_id:
+                                task_items.append((idx, item, tool_id))
+                            else:
+                                other_items.append((idx, item))
                         else:
-                            other_tool_ids.append(tool_id)
+                            # Non-tool_use items (thinking, text) go with "other"
+                            other_items.append((idx, item))
 
-            # Mark all tool_use_ids as output
-            for tid in task_tool_ids + other_tool_ids:
-                output_tool_use_ids.add(tid)
-
-            # If this event has Task tool_use(s), defer the whole event
-            # The Task tool_use will be inserted when we see its tool_result
-            if task_tool_ids:
-                # Skip if all Task tool_ids already output
-                if all(tid in output_task_tool_ids for tid in task_tool_ids):
-                    continue
-                # Track non-Task tool_ids in this deferred event
-                # so we can insert it when their results arrive
-                for tid in other_tool_ids:
-                    deferred_event_by_tool_id[tid] = event
-                # Defer - don't add to expanded yet
+            # If no Tasks, just add the event normally
+            if not task_items:
+                expanded.append(event)
                 continue
 
-        # Check if this is a tool result for a subagent
+            # If there are Tasks, we need to split the event:
+            # 1. First add non-Task content (thinking, text, other tool_uses)
+            # 2. Then for each Task, add it + its agent events
+
+            # Add the original event if there's any non-Task content
+            # (other_items contains thinking, text, and non-Task tool_uses)
+            # Task tool_uses are skipped in create_tree_nodes_for_event, so this is safe
+            if other_items:
+                expanded.append(event)
+
+            # For each Task, create a synthetic event and add agent events after it
+            for task_idx, task_item, task_tool_id in task_items:
+                # Create a synthetic event for just this Task
+                synthetic_event = TraceEvent(
+                    id=f"{event.id}-task-{task_idx}",
+                    event_type=event.event_type,
+                    timestamp=event.timestamp,
+                    data=event.data,  # Same data, but we'll filter at render time
+                    parent_id=event.parent_id,
+                    level=event.level,
+                    is_sidechain=event.is_sidechain,
+                )
+                # Mark which tool_use index this synthetic event should render
+                synthetic_event._render_tool_index = task_idx
+                expanded.append(synthetic_event)
+
+                # Load and insert agent events immediately after this Task
+                if task_tool_id in tool_to_agent:
+                    agent_id = tool_to_agent[task_tool_id]
+                    agent_file = session_dir / f"agent-{agent_id}.jsonl"
+
+                    if agent_file.exists() and agent_id not in loaded_agents:
+                        agent_events = parse_agent_file(agent_file, level=1)
+                        for ae in agent_events:
+                            ae.agent_id = agent_id
+                        expanded.extend(agent_events)
+                        loaded_agents.add(agent_id)
+
+                    # Insert the Task's tool_result right after its agent events
+                    # (so parallel subagents have their results grouped properly)
+                    if task_tool_id in task_tool_results:
+                        result_event = task_tool_results[task_tool_id]
+                        result_event.level = 1
+                        result_event.agent_id = agent_id
+                        expanded.append(result_event)
+                        processed_result_ids.add(task_tool_id)
+
+            continue  # Already handled, skip the append at end
+
+        # Handle subagent tool results
         if event.is_tool_result():
             tool_use_id = event.get_tool_use_id()
 
-            # Check if this tool_result's tool_use is in a deferred event
-            # If so, insert that event first so the tool_call is visible
-            if tool_use_id in deferred_event_by_tool_id:
-                deferred_event = deferred_event_by_tool_id[tool_use_id]
-                if deferred_event.id not in output_deferred_events:
-                    expanded.append(deferred_event)
-                    output_deferred_events.add(deferred_event.id)
-                    # Mark Task tool_ids as output so we don't duplicate later
-                    msg = deferred_event.data.get("message", {})
-                    content = msg.get("content", [])
-                    if isinstance(content, list):
-                        for item in content:
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "tool_use"
-                            ):
-                                if item.get("name") == "Task":
-                                    output_task_tool_ids.add(item.get("id"))
-
-            # Handle subagent tool results
             if tool_use_id in tool_to_agent:
                 # Skip replayed tool results
                 if tool_use_id in processed_result_ids:
                     continue
 
                 agent_id = tool_to_agent[tool_use_id]
-                agent_file = session_dir / f"agent-{agent_id}.jsonl"
-
-                # Only load agent file if not already loaded
-                if agent_file.exists() and agent_id not in loaded_agents:
-                    # Insert the Task tool_use right before the agent events
-                    # (we deferred adding it earlier to group it with subagent events)
-                    if (
-                        tool_use_id in tool_to_use_event
-                        and tool_use_id not in output_task_tool_ids
-                    ):
-                        expanded.append(tool_to_use_event[tool_use_id])
-                        output_task_tool_ids.add(tool_use_id)
-
-                    # Parse agent events and insert them before the tool result
-                    agent_events = parse_agent_file(agent_file, level=1)
-                    # Tag each agent event with its agentId
-                    for ae in agent_events:
-                        ae.agent_id = agent_id
-                    expanded.extend(agent_events)
-                    loaded_agents.add(agent_id)
 
                 # Indent the tool result and tag with agentId
                 event.level = 1
@@ -1220,16 +1216,37 @@ def create_tree_nodes_for_event(
     3. tool_call node(s) (one for EACH tool_use in the message)
 
     Otherwise returns a single node.
+
+    Special case: Synthetic events with _render_tool_index set are rendered as a
+    single node for that specific tool_use only.
     """
+    # Check if this is a synthetic event (created for splitting parallel Tasks)
+    # If so, render only that specific tool_use
+    if event._render_tool_index is not None:
+        return [
+            TraceTreeNode(
+                event,
+                session_id,
+                all_events,
+                previous_event,
+                render_as=f"tool_call_{event._render_tool_index}",
+            )
+        ]
+
     # Check what content types this event has
     has_thinking = False
     has_text = False
-    tool_use_indices = []  # Track indices of tool_use items
+    tool_use_indices = []  # Track indices of NON-Task tool_use items
+    has_list_content = False  # Track if content is a list (needs potential splitting)
+    skipped_task_tools = (
+        False  # Track if we skipped Task tool_uses (synthetic events handle them)
+    )
 
     if "message" in event.data:
         msg = event.data["message"]
         content = msg.get("content", [])
         if isinstance(content, list):
+            has_list_content = True
             for idx, item in enumerate(content):
                 if isinstance(item, dict):
                     item_type = item.get("type")
@@ -1238,6 +1255,14 @@ def create_tree_nodes_for_event(
                     elif item_type == "text":
                         has_text = True
                     elif item_type == "tool_use":
+                        # Skip Task tool_uses for TOP-LEVEL events only - they're handled
+                        # by synthetic events from expand_subagent_events (to group with
+                        # their agent steps). Nested Task calls (inside agent events) are
+                        # NOT expanded, so they should render normally.
+                        tool_name = item.get("name", "")
+                        if tool_name == "Task" and event.level == 0:
+                            skipped_task_tools = True
+                            continue  # Skip - will be handled by synthetic event
                         tool_use_indices.append(idx)
 
     # Count how many content types we have
@@ -1287,9 +1312,41 @@ def create_tree_nodes_for_event(
             is_first = False
 
         return nodes
-    else:
-        # Single node
+    elif content_count == 0 and has_list_content and skipped_task_tools:
+        # List content but nothing renderable because we skipped Task tools
+        # Return empty - the synthetic events will render the Tasks
+        return []
+    elif content_count == 0:
+        # No list content (plain user message, etc.) - render as single node
         return [TraceTreeNode(event, session_id, all_events, previous_event)]
+    else:
+        # Single content type - be explicit about what to render
+        # (avoids is_tool_call() returning True for skipped Task tools)
+        if has_thinking:
+            return [
+                TraceTreeNode(
+                    event, session_id, all_events, previous_event, render_as="thinking"
+                )
+            ]
+        elif has_text:
+            return [
+                TraceTreeNode(
+                    event, session_id, all_events, previous_event, render_as="text"
+                )
+            ]
+        elif tool_use_indices:
+            return [
+                TraceTreeNode(
+                    event,
+                    session_id,
+                    all_events,
+                    previous_event,
+                    render_as=f"tool_call_{tool_use_indices[0]}",
+                )
+            ]
+        else:
+            # Fallback for events without message.content structure (user messages, etc.)
+            return [TraceTreeNode(event, session_id, all_events, previous_event)]
 
 
 def TraceTreeNode(
