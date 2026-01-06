@@ -986,7 +986,8 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
                 total_output_tokens += usage.get("output_tokens", 0)
 
         # Track tool calls - count ALL tools in an event (not just first)
-        if event.is_tool_call():
+        # Skip synthetic events (_render_tool_index set) - they share data with original
+        if event.is_tool_call() and event._render_tool_index is None:
             tool_names = event.get_all_tool_names()
 
             for tool_name in tool_names:
