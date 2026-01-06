@@ -190,6 +190,9 @@ class TraceEvent:
     children: List["TraceEvent"] = field(default_factory=list)
     level: int = 0
     is_sidechain: bool = False  # isSidechain from JSONL
+    agent_id: Optional[str] = (
+        None  # agentId this event belongs to (for subagent events)
+    )
 
     def is_tool_call(self) -> bool:
         """Check if this event is a tool call"""
@@ -545,16 +548,29 @@ def expand_subagent_events(
     Finds Task tool results with agentId in toolUseResult, loads the corresponding
     agent-{agentId}.jsonl file, and inserts those events before the tool result.
 
-    Handles two cases:
+    Handles multiple cases:
     1. Resumed agents (same agentId): Only loads agent file on first occurrence
     2. Replayed events (context compaction): Skips duplicate tool_use_ids entirely
+    3. Messages with multiple tool_use (Task + other): Processes all, defers only Task
+    4. Out-of-order events (tool_result before tool_use): Proper positioning
+
+    For out-of-order events, ensures the Task tool_use is positioned right before
+    the subagent events for proper visual ordering.
     """
     expanded = []
 
-    # Build a map of tool_use_id -> agentId from tool results (first occurrence only)
-    tool_to_agent = {}
-    seen_tool_ids: set = set()
+    # Build maps from tool results and tool uses (first occurrence only)
+    # tool_use_id -> agentId
+    tool_to_agent: Dict[str, str] = {}
+    # tool_use_id -> Task tool_use event (for out-of-order handling)
+    tool_to_use_event: Dict[str, TraceEvent] = {}
+    # Track first occurrence of each tool_use_id (by event UUID)
+    first_tool_use_event: Dict[str, str] = {}  # tool_use_id -> event UUID
+    # Track first occurrence of each tool_result tool_use_id (by event UUID)
+    first_tool_result_event: Dict[str, str] = {}  # tool_use_id -> event UUID
+
     for event in events:
+        # Map tool_use_id -> agentId from tool results
         if event.is_tool_result():
             tool_use_result = event.data.get("toolUseResult")
             if isinstance(tool_use_result, dict):
@@ -563,35 +579,137 @@ def expand_subagent_events(
                 if agent_id and tool_use_id and tool_use_id not in tool_to_agent:
                     tool_to_agent[tool_use_id] = agent_id
 
-    # Track which agent IDs have already been loaded
-    loaded_agents: set = set()
-    # Track which tool_use_ids we've already processed (to skip replayed events)
-    processed_tool_ids: set = set()
+            # Track first occurrence of tool_result
+            tool_use_id = event.get_tool_use_id()
+            if tool_use_id and tool_use_id not in first_tool_result_event:
+                first_tool_result_event[tool_use_id] = event.id
 
-    for event in events:
-        # Check if this is a Task tool call that we've already seen (replayed event)
-        skip_event = False
-        if event.is_tool_call() and event.get_tool_name() == "Task":
+        # Track first occurrence of any tool_use_id and map Task tool_uses
+        if event.is_tool_call():
             msg = event.data.get("message", {})
             content = msg.get("content", [])
             if isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "tool_use":
                         tool_id = item.get("id")
-                        if tool_id and tool_id in processed_tool_ids:
-                            # Skip this replayed Task tool call
-                            skip_event = True
-                            break
+                        tool_name = item.get("name", "")
+                        if tool_id:
+                            # Track first occurrence of any tool_use_id
+                            if tool_id not in first_tool_use_event:
+                                first_tool_use_event[tool_id] = event.id
+                            # Map Task tool_use_id to event
+                            if tool_name == "Task" and tool_id not in tool_to_use_event:
+                                tool_to_use_event[tool_id] = event
 
-        if skip_event:
-            continue
+    # Track which agent IDs have already been loaded
+    loaded_agents: set = set()
+    # Track which Task tool_use_ids we've output (to skip duplicates)
+    output_task_tool_ids: set = set()
+    # Track which tool_result tool_use_ids we've processed (to skip duplicates)
+    processed_result_ids: set = set()
+    # Track ALL tool_use_ids we've output (for general deduplication)
+    output_tool_use_ids: set = set()
+    # Map non-Task tool_use_id -> deferred event (for events with mixed Task + other tools)
+    deferred_event_by_tool_id: Dict[str, TraceEvent] = {}
+    # Track which deferred events we've already output
+    output_deferred_events: set = set()
+
+    for event in events:
+        # Check if this event only contains already-processed tool content
+        # (handles replayed events from context compaction)
+        if event.is_tool_call():
+            msg = event.data.get("message", {})
+            content = msg.get("content", [])
+            tool_use_ids_in_event = []
+
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_use_ids_in_event.append(item.get("id"))
+
+            # Skip events where ALL tool_uses have been output (duplicate)
+            # unless this is the first occurrence event for any tool_use
+            if tool_use_ids_in_event:
+                all_tool_uses_seen = all(
+                    tid in output_tool_use_ids for tid in tool_use_ids_in_event
+                )
+                is_first_occurrence = any(
+                    first_tool_use_event.get(tid) == event.id
+                    for tid in tool_use_ids_in_event
+                )
+                if all_tool_uses_seen and not is_first_occurrence:
+                    continue
+
+        # Check if this is a tool_result that's a duplicate
+        if event.is_tool_result():
+            tool_use_id = event.get_tool_use_id()
+            # Skip if we've already processed this tool_use_id's result
+            # AND this isn't the first occurrence event
+            if tool_use_id and tool_use_id in processed_result_ids:
+                if first_tool_result_event.get(tool_use_id) != event.id:
+                    continue
+
+        # Check if this contains Task tool_use - DEFER adding it
+        if event.is_tool_call():
+            msg = event.data.get("message", {})
+            content = msg.get("content", [])
+            task_tool_ids = []
+            other_tool_ids = []
+
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_id = item.get("id")
+                        tool_name = item.get("name", "")
+                        if tool_name == "Task":
+                            task_tool_ids.append(tool_id)
+                        else:
+                            other_tool_ids.append(tool_id)
+
+            # Mark all tool_use_ids as output
+            for tid in task_tool_ids + other_tool_ids:
+                output_tool_use_ids.add(tid)
+
+            # If this event has Task tool_use(s), defer the whole event
+            # The Task tool_use will be inserted when we see its tool_result
+            if task_tool_ids:
+                # Skip if all Task tool_ids already output
+                if all(tid in output_task_tool_ids for tid in task_tool_ids):
+                    continue
+                # Track non-Task tool_ids in this deferred event
+                # so we can insert it when their results arrive
+                for tid in other_tool_ids:
+                    deferred_event_by_tool_id[tid] = event
+                # Defer - don't add to expanded yet
+                continue
 
         # Check if this is a tool result for a subagent
         if event.is_tool_result():
             tool_use_id = event.get_tool_use_id()
+
+            # Check if this tool_result's tool_use is in a deferred event
+            # If so, insert that event first so the tool_call is visible
+            if tool_use_id in deferred_event_by_tool_id:
+                deferred_event = deferred_event_by_tool_id[tool_use_id]
+                if deferred_event.id not in output_deferred_events:
+                    expanded.append(deferred_event)
+                    output_deferred_events.add(deferred_event.id)
+                    # Mark Task tool_ids as output so we don't duplicate later
+                    msg = deferred_event.data.get("message", {})
+                    content = msg.get("content", [])
+                    if isinstance(content, list):
+                        for item in content:
+                            if (
+                                isinstance(item, dict)
+                                and item.get("type") == "tool_use"
+                            ):
+                                if item.get("name") == "Task":
+                                    output_task_tool_ids.add(item.get("id"))
+
+            # Handle subagent tool results
             if tool_use_id in tool_to_agent:
                 # Skip replayed tool results
-                if tool_use_id in processed_tool_ids:
+                if tool_use_id in processed_result_ids:
                     continue
 
                 agent_id = tool_to_agent[tool_use_id]
@@ -599,15 +717,31 @@ def expand_subagent_events(
 
                 # Only load agent file if not already loaded
                 if agent_file.exists() and agent_id not in loaded_agents:
+                    # Insert the Task tool_use right before the agent events
+                    # (we deferred adding it earlier to group it with subagent events)
+                    if (
+                        tool_use_id in tool_to_use_event
+                        and tool_use_id not in output_task_tool_ids
+                    ):
+                        expanded.append(tool_to_use_event[tool_use_id])
+                        output_task_tool_ids.add(tool_use_id)
+
                     # Parse agent events and insert them before the tool result
                     agent_events = parse_agent_file(agent_file, level=1)
+                    # Tag each agent event with its agentId
+                    for ae in agent_events:
+                        ae.agent_id = agent_id
                     expanded.extend(agent_events)
                     loaded_agents.add(agent_id)
 
-                # Indent the tool result to match the agent events
+                # Indent the tool result and tag with agentId
                 event.level = 1
+                event.agent_id = agent_id
                 # Mark this tool_use_id as processed
-                processed_tool_ids.add(tool_use_id)
+                processed_result_ids.add(tool_use_id)
+            else:
+                # Non-subagent tool result - mark as processed for dedup
+                processed_result_ids.add(tool_use_id)
 
         expanded.append(event)
 
@@ -719,10 +853,54 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
     - tool_calls: dict of tool_name -> count (main level only)
     - subagents: list of {type, tool_calls} for each subagent
     """
-    # Find final event with usage data for input tokens
-    final_input_tokens = 0
-    final_cache_creation = 0
-    final_cache_read = 0
+    # First pass: Build maps for handling out-of-order events
+    # Map tool_use_id -> subagent_type from Task tool_use events
+    tool_id_to_type: Dict[str, str] = {}
+    # Map agentId -> tool_use_id (reverse lookup)
+    agent_to_tool_id: Dict[str, str] = {}
+
+    for event in events:
+        # Extract subagent_type from Task tool_use events
+        if (
+            event.is_tool_call()
+            and event.get_tool_name() == "Task"
+            and event.level == 0
+        ):
+            msg = event.data.get("message", {})
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        tool_id = item.get("id")
+                        input_data = item.get("input", {})
+                        subagent_type = input_data.get("subagent_type", "unknown")
+                        if tool_id and tool_id not in tool_id_to_type:
+                            tool_id_to_type[tool_id] = subagent_type
+                        break
+
+        # Extract agentId -> tool_use_id mapping from tool_result events
+        if event.is_subagent_tool_result():
+            tool_use_id = event.get_tool_use_id()
+            tr = event.data.get("toolUseResult")
+            if isinstance(tr, dict):
+                agent_id = tr.get("agentId")
+                if tool_use_id and agent_id and agent_id not in agent_to_tool_id:
+                    agent_to_tool_id[agent_id] = tool_use_id
+
+    # Initialize subagent stats for all known agents
+    # Key: agentId, Value: subagent stats dict
+    subagent_by_id: Dict[str, Dict[str, Any]] = {}
+    for agent_id, tool_use_id in agent_to_tool_id.items():
+        subagent_type = tool_id_to_type.get(tool_use_id, "unknown")
+        subagent_by_id[agent_id] = {
+            "type": subagent_type,
+            "tool_calls": {},
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "active_time_seconds": 0.0,
+            "first_timestamp": None,
+            "last_timestamp": None,
+        }
 
     # Sum of all output tokens
     total_output_tokens = 0
@@ -731,16 +909,10 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
     total_duration_seconds = 0.0
 
     # Track the last event with usage (for input tokens)
-    last_usage_event = None
+    last_usage_event: Optional[Dict[str, Any]] = None
 
     # Track tool calls at main level (level=0)
     main_tool_calls: Dict[str, int] = {}
-
-    # Track subagents by agentId (to handle resumed agents correctly)
-    # Key: agentId, Value: subagent stats dict
-    subagent_by_id: Dict[str, Dict[str, Any]] = {}
-    current_subagent: Optional[Dict[str, Any]] = None
-    current_agent_id: Optional[str] = None
 
     for idx, event in enumerate(events):
         # Extract usage from message
@@ -757,107 +929,58 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
         if event.is_tool_call():
             tool_name = event.get_tool_name()
 
-            # Check if this is a Task (subagent) call at main level
-            if tool_name == "Task" and event.level == 0:
-                # Extract subagent type from input
-                if "message" in event.data:
-                    msg = event.data["message"]
-                    if isinstance(msg.get("content"), list):
-                        for item in msg["content"]:
-                            if (
-                                isinstance(item, dict)
-                                and item.get("type") == "tool_use"
-                            ):
-                                input_data = item.get("input", {})
-                                subagent_type = input_data.get(
-                                    "subagent_type", "unknown"
-                                )
-                                current_subagent = {
-                                    "type": subagent_type,
-                                    "tool_calls": {},
-                                    "output_tokens": 0,
-                                    "active_time_seconds": 0.0,
-                                    "last_usage": None,
-                                    "first_timestamp": None,
-                                    "last_timestamp": None,
-                                }
-                                # Will be added to subagent_by_id when we see the tool result
-                                break
-
             # Count tool calls based on level
             if event.level == 0:
                 # Main level tool call
                 main_tool_calls[tool_name] = main_tool_calls.get(tool_name, 0) + 1
-            elif event.level > 0 and current_subagent is not None:
-                # Subagent tool call
-                current_subagent["tool_calls"][tool_name] = (
-                    current_subagent["tool_calls"].get(tool_name, 0) + 1
-                )
-
-        # Track subagent last_usage (for fallback, but prefer toolUseResult.usage)
-        if event.level > 0 and current_subagent is not None:
-            if "message" in event.data:
-                msg = event.data["message"]
-                usage = msg.get("usage", {})
-                if usage:
-                    current_subagent["last_usage"] = usage
+            elif event.level > 0 and event.agent_id:
+                # Subagent tool call - use agent_id tag from expansion
+                subagent = subagent_by_id.get(event.agent_id)
+                if subagent:
+                    tool_calls = subagent["tool_calls"]
+                    if isinstance(tool_calls, dict):
+                        tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
 
         # Track subagent timestamps for wall-clock time calculation
-        if event.level > 0 and current_subagent is not None:
-            if event.timestamp:
+        if event.level > 0 and event.agent_id:
+            subagent = subagent_by_id.get(event.agent_id)
+            if subagent and event.timestamp:
                 # Track first timestamp
-                if current_subagent["first_timestamp"] is None:
-                    current_subagent["first_timestamp"] = event.timestamp
+                if subagent["first_timestamp"] is None:
+                    subagent["first_timestamp"] = event.timestamp
                 # Always update last timestamp
-                current_subagent["last_timestamp"] = event.timestamp
+                subagent["last_timestamp"] = event.timestamp
 
-        # Reset current_subagent when we see a subagent tool result at level > 0
-        # that transitions back to level 0
+        # Finalize subagent stats when we see a subagent tool result
         if event.is_subagent_tool_result() and event.level > 0:
-            # Get agentId and usage from toolUseResult
             tool_use_result = event.data.get("toolUseResult")
-            agent_id = None
-            tr_usage = None
             if isinstance(tool_use_result, dict):
                 agent_id = tool_use_result.get("agentId")
                 tr_usage = tool_use_result.get("usage", {})
+                subagent = subagent_by_id.get(agent_id) if agent_id else None
 
-            # Finalize subagent tokens from toolUseResult.usage (accurate totals)
-            if current_subagent and tr_usage:
-                current_subagent["input_tokens"] = (
-                    tr_usage.get("input_tokens", 0)
-                    + tr_usage.get("cache_creation_input_tokens", 0)
-                    + tr_usage.get("cache_read_input_tokens", 0)
-                )
-                current_subagent["output_tokens"] = tr_usage.get("output_tokens", 0)
-            # Fallback to last_usage if toolUseResult.usage not available
-            elif current_subagent and current_subagent.get("last_usage"):
-                last = current_subagent["last_usage"]
-                current_subagent["input_tokens"] = (
-                    last.get("input_tokens", 0)
-                    + last.get("cache_creation_input_tokens", 0)
-                    + last.get("cache_read_input_tokens", 0)
-                )
-                current_subagent["output_tokens"] = last.get("output_tokens", 0)
-            # Calculate active time as wall-clock time (first to last timestamp)
-            if current_subagent:
-                first_ts = current_subagent.get("first_timestamp")
-                last_ts = current_subagent.get("last_timestamp")
-                if first_ts and last_ts:
-                    try:
-                        first_time = date_parser.parse(first_ts)
-                        last_time = date_parser.parse(last_ts)
-                        current_subagent["active_time_seconds"] = (
-                            last_time - first_time
-                        ).total_seconds()
-                    except Exception:
-                        pass
+                # Set tokens from toolUseResult.usage (accurate totals)
+                if subagent and tr_usage:
+                    subagent["input_tokens"] = (
+                        tr_usage.get("input_tokens", 0)
+                        + tr_usage.get("cache_creation_input_tokens", 0)
+                        + tr_usage.get("cache_read_input_tokens", 0)
+                    )
+                    subagent["output_tokens"] = tr_usage.get("output_tokens", 0)
 
-            # Add to subagent_by_id (only if not already present - handles resumed agents)
-            if current_subagent and agent_id and agent_id not in subagent_by_id:
-                subagent_by_id[agent_id] = current_subagent
-
-            current_subagent = None
+                # Calculate active time as wall-clock time (first to last timestamp)
+                if subagent:
+                    first_ts = subagent.get("first_timestamp")
+                    last_ts = subagent.get("last_timestamp")
+                    if first_ts and last_ts:
+                        try:
+                            first_time = date_parser.parse(str(first_ts))
+                            last_time = date_parser.parse(str(last_ts))
+                            subagent["active_time_seconds"] = (
+                                last_time - first_time
+                            ).total_seconds()
+                        except Exception:
+                            pass
 
         # Calculate duration for this event
         # Only count assistant, system, and tool_result events (not user messages)
@@ -1082,38 +1205,162 @@ def ProjectAccordion(project_name: str, sessions: List[Session]):
     )
 
 
+def create_tree_nodes_for_event(
+    event: TraceEvent,
+    session_id: str,
+    all_events: Optional[List[TraceEvent]] = None,
+    previous_event: Optional[TraceEvent] = None,
+) -> List:
+    """Create tree node(s) for an event.
+
+    If the event has multiple content types (thinking, text, tool_use), splits into
+    separate nodes for each, in order:
+    1. thinking node (if present)
+    2. text node (if present, shown as assistant)
+    3. tool_call node(s) (one for EACH tool_use in the message)
+
+    Otherwise returns a single node.
+    """
+    # Check what content types this event has
+    has_thinking = False
+    has_text = False
+    tool_use_indices = []  # Track indices of tool_use items
+
+    if "message" in event.data:
+        msg = event.data["message"]
+        content = msg.get("content", [])
+        if isinstance(content, list):
+            for idx, item in enumerate(content):
+                if isinstance(item, dict):
+                    item_type = item.get("type")
+                    if item_type == "thinking":
+                        has_thinking = True
+                    elif item_type == "text":
+                        has_text = True
+                    elif item_type == "tool_use":
+                        tool_use_indices.append(idx)
+
+    # Count how many content types we have
+    has_tool_call = len(tool_use_indices) > 0
+    content_count = sum([has_thinking, has_text, has_tool_call])
+
+    if content_count > 1 or len(tool_use_indices) > 1:
+        # Split into multiple visual entries, in order
+        nodes = []
+        is_first = True
+
+        if has_thinking:
+            nodes.append(
+                TraceTreeNode(
+                    event,
+                    session_id,
+                    all_events,
+                    previous_event if is_first else None,
+                    render_as="thinking",
+                )
+            )
+            is_first = False
+
+        if has_text:
+            nodes.append(
+                TraceTreeNode(
+                    event,
+                    session_id,
+                    all_events,
+                    previous_event if is_first else None,
+                    render_as="text",
+                )
+            )
+            is_first = False
+
+        # Create a separate node for EACH tool_use
+        for tool_idx in tool_use_indices:
+            nodes.append(
+                TraceTreeNode(
+                    event,
+                    session_id,
+                    all_events,
+                    previous_event if is_first else None,
+                    render_as=f"tool_call_{tool_idx}",
+                )
+            )
+            is_first = False
+
+        return nodes
+    else:
+        # Single node
+        return [TraceTreeNode(event, session_id, all_events, previous_event)]
+
+
 def TraceTreeNode(
     event: TraceEvent,
     session_id: str,
     all_events: Optional[List[TraceEvent]] = None,
     previous_event: Optional[TraceEvent] = None,
+    render_as: Optional[str] = None,  # "thinking" or "tool_call" to force rendering
 ):
-    """Flat timeline event node"""
+    """Flat timeline event node
+
+    Args:
+        render_as: If set, forces rendering as specific type. Used when splitting
+                   events that have both thinking and tool_use content.
+    """
     node_id = f"node-{event.id}"
+    # Modify node_id if forcing a specific render type (to avoid duplicate IDs)
+    if render_as:
+        node_id = f"node-{event.id}-{render_as}"
 
     display_text = event.get_display_text()
+    # Override display text for split nodes
+    if render_as == "thinking":
+        display_text = event.get_thinking_text()
+    elif render_as == "text":
+        # Get text content from message
+        if "message" in event.data:
+            msg = event.data["message"]
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        display_text = item.get("text", "")
+                        break
 
     # Calculate duration for non-user events (but include tool_result which has type "user")
     duration = None
     if event.event_type != "user" or event.is_tool_result():
         duration = event.calculate_duration(previous_event, all_events or [])
 
-    # Check if this is a thinking event
-    if event.is_thinking():
+    # Check if we're forcing a specific render type
+    if render_as == "thinking":
         label = "thinking"
         label_color = "text-xs text-blue-500"
-    # Check if this is a tool call
-    elif event.is_tool_call():
+    elif render_as == "text":
+        label = "assistant"
+        label_color = "text-xs text-purple-500"
+    # Check if this is a tool call (check BEFORE thinking, since events can have both)
+    # render_as can be "tool_call" or "tool_call_N" where N is the content index
+    elif (render_as and render_as.startswith("tool_call")) or event.is_tool_call():
         # Get the tool call ID and extract last 4 characters
         tool_id = None
         tool_name = None
         subagent_type = None
 
+        # Check if we're rendering a specific tool_use by index
+        target_index = None
+        if render_as and render_as.startswith("tool_call_"):
+            try:
+                target_index = int(render_as.split("_")[-1])
+            except ValueError:
+                pass
+
         if "message" in event.data:
             msg = event.data["message"]
             if isinstance(msg.get("content"), list):
-                for item in msg["content"]:
+                for idx, item in enumerate(msg["content"]):
                     if isinstance(item, dict) and item.get("type") == "tool_use":
+                        # If targeting a specific index, skip non-matching
+                        if target_index is not None and idx != target_index:
+                            continue
                         tool_id = item.get("id", "")
                         tool_name = item.get("name", "")
                         # Check if this is a Task tool (subagent)
@@ -1138,7 +1385,10 @@ def TraceTreeNode(
                 label = Span("subagent", cls="text-xs text-cyan-500")
             label_color = None  # Already set in label
         else:
-            # Regular tool call
+            # Regular tool call - show tool name as display text
+            if tool_name:
+                display_text = tool_name
+
             label = "tool call"
             if tool_id and len(tool_id) >= 4:
                 last_4 = tool_id[-4:]
@@ -1179,6 +1429,10 @@ def TraceTreeNode(
                                 if item.get("id") == tool_use_id:
                                     display_text = item.get("name", "unknown")
                                     break
+    # Check if this is a thinking event (after tool_call check, since events can have both)
+    elif event.is_thinking():
+        label = "thinking"
+        label_color = "text-xs text-blue-500"
     elif event.event_type == "assistant":
         label = "assistant"
         label_color = "text-xs text-purple-500"
@@ -1213,12 +1467,17 @@ def TraceTreeNode(
         indent_style = f"margin-left: {indent_px}px; border-left: 2px solid #374151;"
         css_classes += " trace-event-nested"
 
+    # Build URL with optional content_filter for split nodes
+    event_url = f"/event/{session_id}/{event.id}"
+    if render_as:
+        event_url += f"?content_filter={render_as}"
+
     return Div(
         Div(*eyebrow_content, cls="flex justify-between"),
         Span(display_text),
         cls=css_classes,
         style=indent_style if indent_style else None,
-        hx_get=f"/event/{session_id}/{event.id}",
+        hx_get=event_url,
         hx_target="#detail-panel",
         hx_swap="innerHTML",
         id=node_id,
@@ -1275,8 +1534,14 @@ def DetailPanel(
     event: TraceEvent,
     all_events: Optional[List[TraceEvent]] = None,
     previous_event: Optional[TraceEvent] = None,
+    content_filter: Optional[str] = None,
 ):
-    """Detail panel showing event data"""
+    """Detail panel showing event data
+
+    Args:
+        content_filter: Optional filter for split nodes (e.g., "thinking", "text", "tool_call_2")
+                       When set, only shows the specific content type in the Content section.
+    """
     components = []
 
     # Calculate duration for non-user events (but include tool_result which has type "user")
@@ -1305,6 +1570,23 @@ def DetailPanel(
                     continue
 
                 item_type = item.get("type")
+
+                # Apply content filter if specified
+                if content_filter:
+                    if content_filter == "thinking" and item_type != "thinking":
+                        continue
+                    elif content_filter == "text" and item_type != "text":
+                        continue
+                    elif content_filter.startswith("tool_call_"):
+                        # Filter to specific tool_use by index
+                        try:
+                            target_idx = int(content_filter.split("_")[-1])
+                            if item_type != "tool_use" or idx != target_idx:
+                                continue
+                        except ValueError:
+                            pass
+                    elif content_filter == "tool_call" and item_type != "tool_use":
+                        continue
 
                 # Scenario A: text type
                 if item_type == "text":
@@ -1648,10 +1930,13 @@ def viewer(session_id: str):
 
     # Create tree nodes with previous event context for duration calculation
     # Start with summary node as first item
-    tree_nodes = [SessionSummaryNode(session_id)]
+    tree_nodes: List = [SessionSummaryNode(session_id)]
     for idx, event in enumerate(trace_tree):
         previous_event = trace_tree[idx - 1] if idx > 0 else None
-        tree_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
+        # Use helper that splits events with both thinking and tool_use
+        tree_nodes.extend(
+            create_tree_nodes_for_event(event, session_id, trace_tree, previous_event)
+        )
 
     return Layout(
         Div(
@@ -1769,8 +2054,12 @@ def viewer(session_id: str):
 
 
 @rt("/event/{session_id}/{id}")
-def event(session_id: str, id: str):
-    """Get event details (for HTMX)"""
+def event(session_id: str, id: str, content_filter: Optional[str] = None):
+    """Get event details (for HTMX)
+
+    Args:
+        content_filter: Optional filter for split nodes (e.g., "thinking", "text", "tool_call_2")
+    """
     # Check cache first for session file path
     cached = _session_cache.get(session_id)
     if cached and cached.get("file_path"):
@@ -1818,7 +2107,7 @@ def event(session_id: str, id: str):
             previous_event = trace_tree[idx - 1]
             break
 
-    return DetailPanel(found_event, trace_tree, previous_event)
+    return DetailPanel(found_event, trace_tree, previous_event, content_filter)
 
 
 @rt("/summary/{session_id}")
@@ -1882,12 +2171,15 @@ def new_events(session_id: str, after_index: int = 0):
     new_event_list = trace_tree[after_index:]
 
     # Build new tree nodes
-    new_nodes = []
+    new_nodes: List = []
     for idx, event in enumerate(new_event_list):
         # Calculate absolute index for previous event lookup
         abs_idx = after_index + idx
         previous_event = trace_tree[abs_idx - 1] if abs_idx > 0 else None
-        new_nodes.append(TraceTreeNode(event, session_id, trace_tree, previous_event))
+        # Use helper that splits events with both thinking and tool_use
+        new_nodes.extend(
+            create_tree_nodes_for_event(event, session_id, trace_tree, previous_event)
+        )
 
     # Return new nodes + update the event count tracker
     return Div(
