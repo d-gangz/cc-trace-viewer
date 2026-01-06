@@ -122,6 +122,59 @@ custom_css = Style(
 
 selection_script = Script(
     """
+    // Copy session ID to clipboard
+    function copySessionId(event, sessionId) {
+        event.preventDefault();
+        event.stopPropagation();
+        const btn = event.currentTarget;
+
+        // Try modern clipboard API first, fall back to execCommand
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(sessionId).then(() => {
+                showCopySuccess(btn);
+            }).catch(err => {
+                console.error('Clipboard API failed:', err);
+                fallbackCopy(sessionId, btn);
+            });
+        } else {
+            fallbackCopy(sessionId, btn);
+        }
+    }
+
+    function fallbackCopy(text, btn) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            showCopySuccess(btn);
+        } catch (err) {
+            console.error('Fallback copy failed:', err);
+        }
+        document.body.removeChild(textarea);
+    }
+
+    function showCopySuccess(btn) {
+        const copyIcon = btn.querySelector('.copy-icon');
+        const checkIcon = btn.querySelector('.check-icon');
+        const tooltip = btn.querySelector('.copy-tooltip');
+
+        copyIcon.style.display = 'none';
+        checkIcon.style.display = 'block';
+        tooltip.style.opacity = '1';
+        tooltip.style.visibility = 'visible';
+
+        setTimeout(() => {
+            copyIcon.style.display = 'block';
+            checkIcon.style.display = 'none';
+            tooltip.style.opacity = '0';
+            tooltip.style.visibility = 'hidden';
+        }, 1500);
+    }
+
     document.addEventListener('DOMContentLoaded', function() {
         // Auto-select first trace event on page load
         setTimeout(function() {
@@ -2015,30 +2068,6 @@ def viewer(session_id: str):
                         style="width: 32px; height: 32px; padding: 0; margin-left: 8px; vertical-align: middle; background: transparent; border: 1px solid #444; border-radius: 4px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; position: relative;",
                         onclick=f"copySessionId(event, '{session_id}')",
                     ),
-                    Script("""
-                        function copySessionId(event, sessionId) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            const btn = event.currentTarget;
-                            navigator.clipboard.writeText(sessionId).then(() => {
-                                const copyIcon = btn.querySelector('.copy-icon');
-                                const checkIcon = btn.querySelector('.check-icon');
-                                const tooltip = btn.querySelector('.copy-tooltip');
-
-                                copyIcon.style.display = 'none';
-                                checkIcon.style.display = 'block';
-                                tooltip.style.opacity = '1';
-                                tooltip.style.visibility = 'visible';
-
-                                setTimeout(() => {
-                                    copyIcon.style.display = 'block';
-                                    checkIcon.style.display = 'none';
-                                    tooltip.style.opacity = '0';
-                                    tooltip.style.visibility = 'hidden';
-                                }, 1500);
-                            });
-                        }
-                    """),
                     Style("""
                         .copy-btn:hover { background: #333 !important; }
                         .copy-tooltip {
