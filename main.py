@@ -290,6 +290,17 @@ class TraceEvent:
                         return item.get("name", "unknown")
         return ""
 
+    def get_all_tool_names(self) -> List[str]:
+        """Get all tool names if this is a tool call with multiple tools"""
+        names = []
+        if "message" in self.data:
+            msg = self.data["message"]
+            if isinstance(msg.get("content"), list):
+                for item in msg["content"]:
+                    if isinstance(item, dict) and item.get("type") == "tool_use":
+                        names.append(item.get("name", "unknown"))
+        return names
+
     def is_thinking(self) -> bool:
         """Check if this event contains thinking content"""
         if "message" in self.data:
@@ -910,22 +921,21 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
 
     for event in events:
         # Extract subagent_type from Task tool_use events
-        if (
-            event.is_tool_call()
-            and event.get_tool_name() == "Task"
-            and event.level == 0
-        ):
+        # Check ALL tool_uses in an event (not just first) to handle parallel Task calls
+        if event.is_tool_call() and event.level == 0:
             msg = event.data.get("message", {})
             content = msg.get("content", [])
             if isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "tool_use":
+                        # Only process Task tool_uses
+                        if item.get("name") != "Task":
+                            continue
                         tool_id = item.get("id")
                         input_data = item.get("input", {})
                         subagent_type = input_data.get("subagent_type", "unknown")
                         if tool_id and tool_id not in tool_id_to_type:
                             tool_id_to_type[tool_id] = subagent_type
-                        break
 
         # Extract agentId -> tool_use_id mapping from tool_result events
         if event.is_subagent_tool_result():
@@ -943,6 +953,7 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
         subagent_type = tool_id_to_type.get(tool_use_id, "unknown")
         subagent_by_id[agent_id] = {
             "type": subagent_type,
+            "tool_use_id": tool_use_id,  # Store for display
             "tool_calls": {},
             "input_tokens": 0,
             "output_tokens": 0,
@@ -974,21 +985,22 @@ def calculate_session_stats(events: List[TraceEvent]) -> Dict[str, Any]:
                 # Sum output tokens from all events
                 total_output_tokens += usage.get("output_tokens", 0)
 
-        # Track tool calls
+        # Track tool calls - count ALL tools in an event (not just first)
         if event.is_tool_call():
-            tool_name = event.get_tool_name()
+            tool_names = event.get_all_tool_names()
 
-            # Count tool calls based on level
-            if event.level == 0:
-                # Main level tool call
-                main_tool_calls[tool_name] = main_tool_calls.get(tool_name, 0) + 1
-            elif event.level > 0 and event.agent_id:
-                # Subagent tool call - use agent_id tag from expansion
-                subagent = subagent_by_id.get(event.agent_id)
-                if subagent:
-                    tool_calls = subagent["tool_calls"]
-                    if isinstance(tool_calls, dict):
-                        tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
+            for tool_name in tool_names:
+                # Count tool calls based on level
+                if event.level == 0:
+                    # Main level tool call
+                    main_tool_calls[tool_name] = main_tool_calls.get(tool_name, 0) + 1
+                elif event.level > 0 and event.agent_id:
+                    # Subagent tool call - use agent_id tag from expansion
+                    subagent = subagent_by_id.get(event.agent_id)
+                    if subagent:
+                        tool_calls = subagent["tool_calls"]
+                        if isinstance(tool_calls, dict):
+                            tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
 
         # Track subagent timestamps for wall-clock time calculation
         if event.level > 0 and event.agent_id:
@@ -1148,12 +1160,17 @@ def SessionSummaryPanel(stats: Dict[str, Any]):
             subagent_output = subagent.get("output_tokens", 0)
             subagent_total = subagent_input + subagent_output
             subagent_time = subagent.get("active_time_seconds", 0.0)
+            tool_use_id = subagent.get("tool_use_id", "")
+            short_id = tool_use_id[-4:] if tool_use_id else ""
 
             # Subagent header
             subagent_content = [
                 Div(
                     Span(f"{i + 1}. ", cls="text-gray-500"),
                     Span(subagent_type, cls="text-cyan-500 font-medium"),
+                    Span(f" {short_id}", cls="text-gray-500 text-sm")
+                    if short_id
+                    else "",
                     cls="mb-2",
                 )
             ]
