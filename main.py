@@ -52,7 +52,7 @@ def get_cached_session_data(
 
     # Parse fresh
     trace_tree = parse_session_file(session_file)
-    trace_tree = expand_subagent_events(trace_tree, parent_dir)
+    trace_tree = expand_subagent_events(trace_tree, parent_dir, session_id)
 
     # Cache it
     _session_cache[session_id] = {
@@ -608,7 +608,7 @@ def parse_agent_file(file_path: Path, level: int = 1) -> List[TraceEvent]:
 
 
 def expand_subagent_events(
-    events: List[TraceEvent], session_dir: Path
+    events: List[TraceEvent], session_dir: Path, session_id: str
 ) -> List[TraceEvent]:
     """Expand subagent tool calls with their agent trace events.
 
@@ -621,6 +621,10 @@ def expand_subagent_events(
     2. Replayed events (context compaction): Skips duplicate tool_use_ids entirely
     3. Messages with multiple tool_use (Task + other): Splits and processes each
     4. Multiple parallel subagents: Each subagent's events grouped with its call
+
+    Agent files are looked up in two locations (new format first):
+    1. session_dir/session_id/subagents/agent-{agent_id}.jsonl (new format)
+    2. session_dir/agent-{agent_id}.jsonl (legacy format)
     """
     expanded = []
 
@@ -763,7 +767,16 @@ def expand_subagent_events(
                 # Load and insert agent events immediately after this Task
                 if task_tool_id in tool_to_agent:
                     agent_id = tool_to_agent[task_tool_id]
-                    agent_file = session_dir / f"agent-{agent_id}.jsonl"
+                    # Check new format first (session_dir/session_id/subagents/agent-X.jsonl)
+                    agent_file = (
+                        session_dir
+                        / session_id
+                        / "subagents"
+                        / f"agent-{agent_id}.jsonl"
+                    )
+                    # Fall back to legacy format (session_dir/agent-X.jsonl)
+                    if not agent_file.exists():
+                        agent_file = session_dir / f"agent-{agent_id}.jsonl"
 
                     if agent_file.exists() and agent_id not in loaded_agents:
                         agent_events = parse_agent_file(agent_file, level=1)
